@@ -1,9 +1,11 @@
 import {
   ButtonItem,
+  DropdownItem,
   PanelSection,
   PanelSectionRow,
-  Navigation,
-  staticClasses
+  ProgressBarWithInfo,
+  TextField,
+  staticClasses,
 } from "@decky/ui";
 import {
   addEventListener,
@@ -11,105 +13,580 @@ import {
   callable,
   definePlugin,
   toaster,
-  // routerHook
-} from "@decky/api"
-import { useState } from "react";
-import { FaShip } from "react-icons/fa";
+} from "@decky/api";
+import { useState, useEffect, useCallback } from "react";
+import { FaYoutube } from "react-icons/fa";
 
-// import logo from "../assets/logo.png";
+// ---------------------------------------------------------------------------
+// Backend callables
+// ---------------------------------------------------------------------------
+const getVideoFiles = callable<[], VideoFile[]>("get_video_files");
+const convertToMp4 = callable<[source_path: string], CallResult>("convert_to_mp4");
+const saveCredentials = callable<[client_id: string, client_secret: string], CallResult>(
+  "save_credentials"
+);
+const getCredentials = callable<[], Credentials>("get_credentials");
+const startAuth = callable<[client_id: string, client_secret: string], AuthStartResult>(
+  "start_auth"
+);
+const pollAuth = callable<[], AuthPollResult>("poll_auth");
+const checkAuth = callable<[], AuthStatus>("check_auth");
+const revokeAuth = callable<[], CallResult>("revoke_auth");
+const uploadToYoutube = callable<
+  [
+    filepath: string,
+    title: string,
+    description: string,
+    tags: string,
+    privacy: string,
+  ],
+  CallResult
+>("upload_to_youtube");
 
-// This function calls the python function "add", which takes in two numbers and returns their sum (as a number)
-// Note the type annotations:
-//  the first one: [first: number, second: number] is for the arguments
-//  the second one: number is for the return value
-const add = callable<[first: number, second: number], number>("add");
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+interface VideoFile {
+  path: string;
+  name: string;
+  size: number;
+  modified: number;
+  ext: string;
+  needs_conversion: boolean;
+}
 
-// This function calls the python function "start_timer", which takes in no arguments and returns nothing.
-// It starts a (python) timer which eventually emits the event 'timer_event'
-const startTimer = callable<[], void>("start_timer");
+interface CallResult {
+  success: boolean;
+  error?: string;
+  started?: boolean;
+}
 
+interface Credentials {
+  client_id?: string;
+  client_secret?: string;
+}
+
+interface AuthStartResult {
+  success: boolean;
+  user_code?: string;
+  verification_url?: string;
+  error?: string;
+}
+
+interface AuthPollResult {
+  success: boolean;
+  authenticated?: boolean;
+  pending?: boolean;
+  error?: string;
+}
+
+interface AuthStatus {
+  authenticated: boolean;
+  needs_reauth?: boolean;
+  error?: string;
+}
+
+interface UploadProgress {
+  progress?: number;
+  status: "starting" | "uploading" | "complete" | "error";
+  video_id?: string;
+  video_url?: string;
+  error?: string;
+}
+
+interface ConversionProgress {
+  status: "started" | "complete" | "error";
+  output_path?: string;
+  size?: number;
+  error?: string;
+}
+
+type View = "list" | "settings" | "upload";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1_048_576) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1_073_741_824) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  return `${(bytes / 1_073_741_824).toFixed(2)} GB`;
+}
+
+// ---------------------------------------------------------------------------
+// Content component
+// ---------------------------------------------------------------------------
 function Content() {
-  const [result, setResult] = useState<number | undefined>();
+  const [view, setView] = useState<View>("list");
+  const [videos, setVideos] = useState<VideoFile[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [selectedVideo, setSelectedVideo] = useState<VideoFile | null>(null);
 
-  const onClick = async () => {
-    const result = await add(Math.random(), Math.random());
-    setResult(result);
+  // Upload form
+  const [uploadTitle, setUploadTitle] = useState("");
+  const [uploadDescription, setUploadDescription] = useState("");
+  const [uploadTags, setUploadTags] = useState("");
+  const [uploadPrivacy, setUploadPrivacy] = useState("private");
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+
+  // Settings / auth
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [authCode, setAuthCode] = useState("");
+  const [authUrl, setAuthUrl] = useState("");
+  const [authPolling, setAuthPolling] = useState(false);
+
+  // Conversion
+  const [converting, setConverting] = useState(false);
+
+  // ── Loaders ──────────────────────────────────────────────────────────────
+  const refreshVideos = useCallback(async () => {
+    setLoading(true);
+    try {
+      const files = await getVideoFiles();
+      setVideos(files);
+    } catch {
+      toaster.toast({ title: "Error", body: "Failed to load video files" });
+    }
+    setLoading(false);
+  }, []);
+
+  const refreshAuthStatus = useCallback(async () => {
+    try {
+      const status = await checkAuth();
+      setIsAuthenticated(status.authenticated);
+    } catch {
+      setIsAuthenticated(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshVideos();
+    refreshAuthStatus();
+    getCredentials().then((creds) => {
+      if (creds.client_id) setClientId(creds.client_id);
+      if (creds.client_secret) setClientSecret(creds.client_secret);
+    });
+  }, [refreshVideos, refreshAuthStatus]);
+
+  // ── Event listeners (update UI state) ────────────────────────────────────
+  useEffect(() => {
+    const uploadListener = addEventListener<[UploadProgress]>(
+      "upload_progress",
+      (progress) => {
+        setUploadProgress(progress);
+      }
+    );
+
+    const conversionListener = addEventListener<[ConversionProgress]>(
+      "conversion_progress",
+      (progress) => {
+        setConverting(progress.status === "started");
+        if (progress.status === "complete") refreshVideos();
+      }
+    );
+
+    return () => {
+      removeEventListener("upload_progress", uploadListener);
+      removeEventListener("conversion_progress", conversionListener);
+    };
+  }, [refreshVideos]);
+
+  // ── Auth polling ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!authPolling) return;
+    const interval = setInterval(async () => {
+      const result = await pollAuth();
+      if (result.authenticated) {
+        setAuthPolling(false);
+        setAuthCode("");
+        setAuthUrl("");
+        setIsAuthenticated(true);
+        toaster.toast({ title: "Connected!", body: "YouTube account linked successfully" });
+      } else if (!result.pending) {
+        setAuthPolling(false);
+        toaster.toast({ title: "Auth Failed", body: result.error ?? "Authorization failed" });
+      }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [authPolling]);
+
+  // ── Settings handlers ─────────────────────────────────────────────────────
+  const handleSaveCredentials = async () => {
+    if (!clientId || !clientSecret) {
+      toaster.toast({ title: "Error", body: "Please enter both Client ID and Client Secret" });
+      return;
+    }
+    const result = await saveCredentials(clientId, clientSecret);
+    if (result.success) {
+      toaster.toast({ title: "Saved", body: "Credentials saved successfully" });
+    } else {
+      toaster.toast({ title: "Error", body: result.error ?? "Failed to save credentials" });
+    }
   };
 
+  const handleConnectYoutube = async () => {
+    if (!clientId || !clientSecret) {
+      toaster.toast({
+        title: "Error",
+        body: "Please enter your Client ID and Client Secret first",
+      });
+      return;
+    }
+    const result = await startAuth(clientId, clientSecret);
+    if (result.success) {
+      setAuthCode(result.user_code ?? "");
+      setAuthUrl(result.verification_url ?? "");
+      setAuthPolling(true);
+    } else {
+      toaster.toast({ title: "Auth Error", body: result.error ?? "Failed to start auth" });
+    }
+  };
+
+  const handleDisconnect = async () => {
+    await revokeAuth();
+    setIsAuthenticated(false);
+    toaster.toast({ title: "Disconnected", body: "YouTube account unlinked" });
+  };
+
+  // ── Upload handlers ───────────────────────────────────────────────────────
+  const handleSelectForUpload = (video: VideoFile) => {
+    setSelectedVideo(video);
+    setUploadTitle(video.name.replace(/\.[^/.]+$/, ""));
+    setUploadDescription("");
+    setUploadTags("");
+    setUploadPrivacy("private");
+    setUploadProgress(null);
+    setView("upload");
+  };
+
+  const handleUpload = async () => {
+    if (!selectedVideo) return;
+    const result = await uploadToYoutube(
+      selectedVideo.path,
+      uploadTitle || selectedVideo.name,
+      uploadDescription,
+      uploadTags,
+      uploadPrivacy
+    );
+    if (!result.success) {
+      toaster.toast({ title: "Upload Error", body: result.error ?? "Failed to start upload" });
+    }
+  };
+
+  // ── Settings view ─────────────────────────────────────────────────────────
+  if (view === "settings") {
+    return (
+      <>
+        <PanelSection>
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={() => setView("list")}>
+              ← Back to Videos
+            </ButtonItem>
+          </PanelSectionRow>
+        </PanelSection>
+
+        <PanelSection title="YouTube Authentication">
+          {isAuthenticated ? (
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={handleDisconnect}>
+                Disconnect YouTube Account
+              </ButtonItem>
+            </PanelSectionRow>
+          ) : (
+            <>
+              <PanelSectionRow>
+                <TextField
+                  label="Client ID"
+                  description="From Google Cloud Console → OAuth 2.0 Client IDs"
+                  value={clientId}
+                  onChange={(e) => setClientId(e.target.value)}
+                />
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <TextField
+                  label="Client Secret"
+                  value={clientSecret}
+                  onChange={(e) => setClientSecret(e.target.value)}
+                  bIsPassword
+                />
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={handleSaveCredentials}>
+                  Save Credentials
+                </ButtonItem>
+              </PanelSectionRow>
+              {authCode ? (
+                <>
+                  <PanelSectionRow>
+                    <div style={{ fontSize: "12px", wordBreak: "break-all" }}>
+                      Visit: <strong>{authUrl}</strong>
+                    </div>
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <div
+                      style={{
+                        fontSize: "16px",
+                        textAlign: "center",
+                        padding: "8px",
+                        letterSpacing: "4px",
+                        fontWeight: "bold",
+                      }}
+                    >
+                      {authCode}
+                    </div>
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <div style={{ fontSize: "12px", color: "#aaa" }}>
+                      {authPolling
+                        ? "⏳ Waiting for authorization…"
+                        : "Enter this code at the URL above"}
+                    </div>
+                  </PanelSectionRow>
+                </>
+              ) : (
+                <PanelSectionRow>
+                  <ButtonItem layout="below" onClick={handleConnectYoutube}>
+                    Connect YouTube Account
+                  </ButtonItem>
+                </PanelSectionRow>
+              )}
+            </>
+          )}
+        </PanelSection>
+      </>
+    );
+  }
+
+  // ── Upload form view ──────────────────────────────────────────────────────
+  if (view === "upload" && selectedVideo) {
+    const isUploading =
+      uploadProgress != null &&
+      (uploadProgress.status === "starting" || uploadProgress.status === "uploading");
+    const isComplete = uploadProgress?.status === "complete";
+    const hasError = uploadProgress?.status === "error";
+
+    return (
+      <>
+        <PanelSection>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={() => setView("list")}
+              disabled={isUploading}
+            >
+              ← Back to Videos
+            </ButtonItem>
+          </PanelSectionRow>
+        </PanelSection>
+
+        <PanelSection title="Upload to YouTube">
+          <PanelSectionRow>
+            <div style={{ fontSize: "12px", color: "#ccc", wordBreak: "break-all" }}>
+              {selectedVideo.name} ({formatSize(selectedVideo.size)})
+            </div>
+          </PanelSectionRow>
+
+          {!isUploading && !isComplete && (
+            <>
+              <PanelSectionRow>
+                <TextField
+                  label="Title"
+                  value={uploadTitle}
+                  onChange={(e) => setUploadTitle(e.target.value)}
+                />
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <TextField
+                  label="Description"
+                  value={uploadDescription}
+                  onChange={(e) => setUploadDescription(e.target.value)}
+                />
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <TextField
+                  label="Tags (comma-separated)"
+                  value={uploadTags}
+                  onChange={(e) => setUploadTags(e.target.value)}
+                />
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <DropdownItem
+                  label="Privacy"
+                  rgOptions={[
+                    { data: "private", label: "Private" },
+                    { data: "unlisted", label: "Unlisted" },
+                    { data: "public", label: "Public" },
+                  ]}
+                  selectedOption={uploadPrivacy}
+                  onChange={(opt) => setUploadPrivacy(opt.data)}
+                />
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <ButtonItem
+                  layout="below"
+                  onClick={handleUpload}
+                  disabled={!isAuthenticated}
+                >
+                  {isAuthenticated
+                    ? "Upload to YouTube"
+                    : "Connect YouTube first (Settings ⚙)"}
+                </ButtonItem>
+              </PanelSectionRow>
+              {hasError && (
+                <PanelSectionRow>
+                  <div style={{ fontSize: "12px", color: "#f44" }}>
+                    ✗ {uploadProgress?.error}
+                  </div>
+                </PanelSectionRow>
+              )}
+            </>
+          )}
+
+          {isUploading && (
+            <PanelSectionRow>
+              <ProgressBarWithInfo
+                nProgress={uploadProgress?.progress ?? 0}
+                sOperationText={
+                  uploadProgress?.status === "starting" ? "Starting…" : "Uploading…"
+                }
+                sTimeRemaining={`${uploadProgress?.progress ?? 0}%`}
+              />
+            </PanelSectionRow>
+          )}
+
+          {isComplete && (
+            <PanelSectionRow>
+              <div style={{ fontSize: "12px", color: "#4CAF50", wordBreak: "break-all" }}>
+                ✓ Upload complete!
+                <br />
+                {uploadProgress?.video_url}
+              </div>
+            </PanelSectionRow>
+          )}
+        </PanelSection>
+      </>
+    );
+  }
+
+  // ── Video list view (default) ─────────────────────────────────────────────
   return (
-    <PanelSection title="Panel Section">
-      <PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          onClick={onClick}
-        >
-          {result ?? "Add two numbers via Python"}
-        </ButtonItem>
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          onClick={() => startTimer()}
-        >
-          {"Start Python timer"}
-        </ButtonItem>
-      </PanelSectionRow>
+    <>
+      <PanelSection>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => setView("settings")}>
+            ⚙ Settings {isAuthenticated ? "· YouTube ✓" : "· Connect YouTube"}
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
+            {loading ? "Scanning…" : "↺ Refresh Videos"}
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
 
-      {/* <PanelSectionRow>
-        <div style={{ display: "flex", justifyContent: "center" }}>
-          <img src={logo} />
-        </div>
-      </PanelSectionRow> */}
-
-      {/*<PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          onClick={() => {
-            Navigation.Navigate("/decky-plugin-test");
-            Navigation.CloseSideMenus();
-          }}
-        >
-          Router
-        </ButtonItem>
-      </PanelSectionRow>*/}
-    </PanelSection>
+      <PanelSection title={`Videos (${videos.length})`}>
+        {videos.length === 0 && !loading && (
+          <PanelSectionRow>
+            <div style={{ fontSize: "12px", color: "#aaa" }}>
+              No video files found. Game recordings are usually stored in
+              ~/.local/share/Steam/userdata/[user-id]/760/remote or ~/Videos.
+            </div>
+          </PanelSectionRow>
+        )}
+        {videos.map((video) => (
+          <PanelSection key={video.path}>
+            <PanelSectionRow>
+              <div
+                style={{
+                  fontSize: "12px",
+                  fontWeight: "bold",
+                  wordBreak: "break-all",
+                  marginBottom: "2px",
+                }}
+              >
+                {video.name}
+              </div>
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <div style={{ fontSize: "11px", color: "#aaa" }}>
+                {formatSize(video.size)} · {video.ext.toUpperCase()}
+              </div>
+            </PanelSectionRow>
+            {video.needs_conversion && (
+              <PanelSectionRow>
+                <ButtonItem
+                  layout="below"
+                  onClick={() => convertToMp4(video.path)}
+                  disabled={converting}
+                >
+                  {converting ? "Converting…" : "Convert to MP4"}
+                </ButtonItem>
+              </PanelSectionRow>
+            )}
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={() => handleSelectForUpload(video)}>
+                Upload to YouTube
+              </ButtonItem>
+            </PanelSectionRow>
+          </PanelSection>
+        ))}
+      </PanelSection>
+    </>
   );
-};
+}
 
+// ---------------------------------------------------------------------------
+// Plugin entry point
+// ---------------------------------------------------------------------------
 export default definePlugin(() => {
-  console.log("Template plugin initializing, this is called once on frontend startup")
+  console.log("Video Uploader plugin initializing");
 
-  // serverApi.routerHook.addRoute("/decky-plugin-test", DeckyPluginRouterTest, {
-  //   exact: true,
-  // });
+  // Plugin-level listeners show toast notifications even when the panel is closed
+  const uploadListener = addEventListener<[UploadProgress]>(
+    "upload_progress",
+    (progress) => {
+      if (progress.status === "complete") {
+        toaster.toast({
+          title: "Upload Complete!",
+          body: `Video uploaded: ${progress.video_url}`,
+        });
+      } else if (progress.status === "error") {
+        toaster.toast({
+          title: "Upload Failed",
+          body: progress.error ?? "Unknown error",
+        });
+      }
+    }
+  );
 
-  // Add an event listener to the "timer_event" event from the backend
-  const listener = addEventListener<[
-    test1: string,
-    test2: boolean,
-    test3: number
-  ]>("timer_event", (test1, test2, test3) => {
-    console.log("Template got timer_event with:", test1, test2, test3)
-    toaster.toast({
-      title: "template got timer_event",
-      body: `${test1}, ${test2}, ${test3}`
-    });
-  });
+  const conversionListener = addEventListener<[ConversionProgress]>(
+    "conversion_progress",
+    (progress) => {
+      if (progress.status === "complete") {
+        toaster.toast({
+          title: "Conversion Complete",
+          body: `Saved to: ${progress.output_path}`,
+        });
+      } else if (progress.status === "error") {
+        toaster.toast({
+          title: "Conversion Failed",
+          body: progress.error ?? "Unknown error",
+        });
+      }
+    }
+  );
 
   return {
-    // The name shown in various decky menus
-    name: "Test Plugin",
-    // The element displayed at the top of your plugin's menu
-    titleView: <div className={staticClasses.Title}>Decky Example Plugin</div>,
-    // The content of your plugin's menu
+    name: "Video Uploader",
+    titleView: <div className={staticClasses.Title}>Video Uploader</div>,
     content: <Content />,
-    // The icon displayed in the plugin list
-    icon: <FaShip />,
-    // The function triggered when your plugin unloads
+    icon: <FaYoutube />,
     onDismount() {
-      console.log("Unloading")
-      removeEventListener("timer_event", listener);
-      // serverApi.routerHook.removeRoute("/decky-plugin-test");
+      console.log("Video Uploader unloading");
+      removeEventListener("upload_progress", uploadListener);
+      removeEventListener("conversion_progress", conversionListener);
     },
   };
 });

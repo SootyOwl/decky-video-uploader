@@ -52,17 +52,55 @@ class Plugin:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _videos_dir(self) -> str:
-        """Output directory for exported / converted videos."""
-        path = os.path.join(decky.DECKY_USER_HOME, "Videos")
-        os.makedirs(path, exist_ok=True)
-        return path
+    def _videos_dir(self, game_subfolder: str = "") -> str:
+        """Output directory for exported / converted videos.
+
+        If *game_subfolder* is provided **and** the ``use_game_subfolders``
+        setting is enabled the video is written under ``~/Videos/<subfolder>/``.
+        """
+        base = os.path.join(decky.DECKY_USER_HOME, "Videos")
+        if game_subfolder and self._load_settings().get("use_game_subfolders", True):
+            # Strip control chars, replace reserved path characters, strip
+            # again after truncating so the name never ends with a space/dot
+            cleaned = "".join(c for c in game_subfolder if ord(c) >= 32)
+            safe_name = re.sub(r'[<>:"/\\|?*]', "_", cleaned).strip(" .")[:64].strip(" .")
+            if safe_name:
+                path = os.path.join(base, safe_name)
+                os.makedirs(path, exist_ok=True)
+                return path
+        os.makedirs(base, exist_ok=True)
+        return base
 
     def _creds_path(self) -> str:
         return os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "client_credentials.json")
 
     def _token_path(self) -> str:
         return os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "youtube_token.json")
+
+    def _settings_path(self) -> str:
+        return os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "settings.json")
+
+    def _load_settings(self) -> dict:
+        try:
+            if os.path.isfile(self._settings_path()):
+                with open(self._settings_path()) as fh:
+                    return json.load(fh)
+        except Exception:
+            pass
+        return {"use_game_subfolders": True}
+
+    async def get_settings(self) -> dict:
+        """Return plugin settings."""
+        return self._load_settings()
+
+    async def save_settings(self, settings: dict) -> dict:
+        """Persist plugin settings."""
+        try:
+            with open(self._settings_path(), "w") as fh:
+                json.dump(settings, fh)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
 
     # ------------------------------------------------------------------
     # Video discovery
@@ -246,6 +284,14 @@ class Plugin:
                         fpath = os.path.join(dirpath, fname)
                         try:
                             st = os.stat(fpath)
+                            # Extract game App ID from Steam 760/remote/<appid>/... paths
+                            # using a regex match on the normalised path
+                            game_id = ""
+                            m = re.search(
+                                r"[/\\]760[/\\]remote[/\\](\d+)[/\\]", fpath
+                            )
+                            if m:
+                                game_id = m.group(1)
                             videos.append(
                                 {
                                     "path": fpath,
@@ -255,6 +301,7 @@ class Plugin:
                                     "ext": ext,
                                     "needs_conversion": ext != ".mp4",
                                     "is_steam_clip": False,
+                                    "game_id": game_id,
                                 }
                             )
                         except OSError:
@@ -272,18 +319,23 @@ class Plugin:
     # MP4 conversion (runs as a background asyncio task)
     # ------------------------------------------------------------------
 
-    async def convert_to_mp4(self, source_path: str) -> dict:
+    async def convert_to_mp4(self, source_path: str, game_id: str = "") -> dict:
         """Convert a video to H.264/AAC MP4 using ffmpeg.
 
         Returns immediately; emits *conversion_progress* events when done.
         """
         if not os.path.isfile(source_path):
             return {"success": False, "error": "Source file not found"}
-        asyncio.get_event_loop().create_task(self._run_conversion(source_path))
+        # Resolve game name for subfolder (best-effort from game_id or source path)
+        game_name = ""
+        if game_id and game_id.isdigit():
+            names = await self.get_game_names()
+            game_name = names.get(game_id, game_id)
+        asyncio.get_event_loop().create_task(self._run_conversion(source_path, game_name))
         return {"success": True, "started": True}
 
-    async def _run_conversion(self, source_path: str) -> None:
-        out_dir = self._videos_dir()
+    async def _run_conversion(self, source_path: str, game_name: str = "") -> None:
+        out_dir = self._videos_dir(game_name)
         base = os.path.splitext(os.path.basename(source_path))[0]
         output_path = os.path.join(out_dir, f"{base}.mp4")
         counter = 1
@@ -342,7 +394,7 @@ class Plugin:
     # Steam clip conversion (m4s MPEG-DASH → MP4)
     # ------------------------------------------------------------------
 
-    async def convert_steam_clip(self, clip_folder: str) -> dict:
+    async def convert_steam_clip(self, clip_folder: str, game_id: str = "") -> dict:
         """Convert a Steam internal MPEG-DASH game recording to MP4.
 
         *clip_folder* must be a directory containing a ``session.mpd`` file.
@@ -350,7 +402,14 @@ class Plugin:
         """
         if not os.path.isdir(clip_folder):
             return {"success": False, "error": "Clip folder not found"}
-        asyncio.get_event_loop().create_task(self._run_steam_clip_conversion(clip_folder))
+        # Look up game name for subfolder
+        game_name = ""
+        if game_id and game_id.isdigit():
+            names = await self.get_game_names()
+            game_name = names.get(game_id, game_id)
+        asyncio.get_event_loop().create_task(
+            self._run_steam_clip_conversion(clip_folder, game_name)
+        )
         return {"success": True, "started": True}
 
     async def delete_steam_clip(self, clip_folder: str) -> dict:
@@ -377,6 +436,34 @@ class Plugin:
 
         try:
             shutil.rmtree(safe_path)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    async def delete_video(self, filepath: str) -> dict:
+        """Delete an exported video file.
+
+        Safety check: the file must be under the user's home directory and
+        must not be a directory.
+        """
+        safe_path = os.path.realpath(os.path.normpath(filepath))
+        user_home = os.path.realpath(os.path.normpath(decky.DECKY_USER_HOME))
+        if not safe_path.startswith(user_home + os.sep):
+            return {"success": False, "error": "File is not inside the user home directory"}
+        if not os.path.isfile(safe_path):
+            return {"success": False, "error": "File not found"}
+        try:
+            os.unlink(safe_path)
+            # Atomically remove parent dir if it's an empty game subfolder.
+            # Skip the listdir check to avoid a TOCTOU race — os.rmdir already
+            # fails atomically with ENOTEMPTY if the directory is not empty.
+            parent = os.path.dirname(safe_path)
+            videos_base = os.path.join(user_home, "Videos")
+            if parent != videos_base:
+                try:
+                    os.rmdir(parent)
+                except OSError:
+                    pass
             return {"success": True}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
@@ -418,8 +505,8 @@ class Plugin:
                 pass
         return out_path
 
-    async def _run_steam_clip_conversion(self, clip_folder: str) -> None:
-        out_dir = self._videos_dir()
+    async def _run_steam_clip_conversion(self, clip_folder: str, game_name: str = "") -> None:
+        out_dir = self._videos_dir(game_name)
         clip_name = os.path.basename(clip_folder)
         output_path = os.path.join(out_dir, f"{clip_name}.mp4")
         counter = 1

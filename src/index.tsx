@@ -21,9 +21,16 @@ import { FaYoutube } from "react-icons/fa";
 // ---------------------------------------------------------------------------
 const getVideoFiles = callable<[], VideoFile[]>("get_video_files");
 const getGameNames = callable<[], Record<string, string>>("get_game_names");
-const convertToMp4 = callable<[source_path: string], CallResult>("convert_to_mp4");
-const convertSteamClip = callable<[clip_folder: string], CallResult>("convert_steam_clip");
-const deleteClip = callable<[clip_folder: string], CallResult>("delete_steam_clip");
+const getSettings = callable<[], PluginSettings>("get_settings");
+const saveSettings = callable<[settings: PluginSettings], CallResult>("save_settings");
+const convertToMp4 = callable<[source_path: string, game_id: string], CallResult>(
+  "convert_to_mp4"
+);
+const convertSteamClip = callable<[clip_folder: string, game_id: string], CallResult>(
+  "convert_steam_clip"
+);
+const deleteSteamClip = callable<[clip_folder: string], CallResult>("delete_steam_clip");
+const deleteVideo = callable<[filepath: string], CallResult>("delete_video");
 const saveCredentials = callable<[client_id: string, client_secret: string], CallResult>(
   "save_credentials"
 );
@@ -58,6 +65,10 @@ interface VideoFile {
   is_steam_clip: boolean;
   game_id?: string;
   clip_type?: string;
+}
+
+interface PluginSettings {
+  use_game_subfolders: boolean;
 }
 
 interface CallResult {
@@ -106,7 +117,7 @@ interface ConversionProgress {
   error?: string;
 }
 
-type View = "list" | "clips" | "settings" | "upload";
+type View = "list" | "clips" | "videos" | "settings" | "upload";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,10 +133,68 @@ function formatDate(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString();
 }
 
-/** Cycle through an array of options and return the next value */
-function cycleOption<T extends string>(current: T, options: T[]): T {
-  const idx = options.indexOf(current);
-  return options[(idx + 1) % options.length];
+// ---------------------------------------------------------------------------
+// InlineSelect — a non-modal dropdown that stays inside the panel.
+//
+// Steam's built-in DropdownItem always opens a full-screen native modal and
+// closes the panel when an option is selected — that is by design in the
+// Steam QAM UI and cannot be overridden via any prop.  InlineSelect renders
+// an inline option list using plain ButtonItems so no navigation occurs.
+// ---------------------------------------------------------------------------
+interface SelectOption<T extends string> {
+  value: T;
+  label: string;
+}
+
+function InlineSelect<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: SelectOption<T>[];
+  onChange: (v: T) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((o) => o.value === value);
+
+  return (
+    <>
+      <PanelSectionRow>
+        <ButtonItem
+          layout="below"
+          onClick={() => setOpen((o) => !o)}
+        >
+          {label}: {selected?.label ?? value} {open ? "▲" : "▼"}
+        </ButtonItem>
+      </PanelSectionRow>
+      {open &&
+        options.map((opt) => (
+          <PanelSectionRow key={opt.value}>
+            <div
+              style={
+                opt.value === value
+                  ? { background: "rgba(255,255,255,0.12)", borderRadius: "4px" }
+                  : undefined
+              }
+            >
+              <ButtonItem
+                layout="below"
+                onClick={() => {
+                  onChange(opt.value);
+                  setOpen(false);
+                }}
+              >
+                {opt.value === value ? "✓  " : "    "}
+                {opt.label}
+              </ButtonItem>
+            </div>
+          </PanelSectionRow>
+        ))}
+    </>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -135,40 +204,56 @@ function Content() {
   const [view, setView] = useState<View>("list");
   const [videos, setVideos] = useState<VideoFile[]>([]);
   const [gameNames, setGameNames] = useState<Record<string, string>>({});
+  const [pluginSettings, setPluginSettings] = useState<PluginSettings>({
+    use_game_subfolders: true,
+  });
   const [loading, setLoading] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<VideoFile | null>(null);
 
-  // Upload form
+  // Upload form state
   const [uploadTitle, setUploadTitle] = useState("");
   const [uploadDescription, setUploadDescription] = useState("");
   const [uploadTags, setUploadTags] = useState("");
   const [uploadPrivacy, setUploadPrivacy] = useState<"private" | "unlisted" | "public">("private");
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
 
-  // Settings / auth
+  // Auth state
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [authCode, setAuthCode] = useState("");
   const [authUrl, setAuthUrl] = useState("");
   const [authPolling, setAuthPolling] = useState(false);
 
-  // Conversion
+  // Conversion state
   const [converting, setConverting] = useState(false);
 
-  // Clip filters – "all" | specific game_id | specific type
+  // Clip filters
   const [clipGameFilter, setClipGameFilter] = useState("all");
   const [clipTypeFilter, setClipTypeFilter] = useState<"all" | "clips" | "video">("all");
+
+  // Exported video filters
+  const [videoGameFilter, setVideoGameFilter] = useState("all");
 
   // ── Derived data ──────────────────────────────────────────────────────────
   const steamClips = useMemo(() => videos.filter((v) => v.is_steam_clip), [videos]);
   const exportedVideos = useMemo(() => videos.filter((v) => !v.is_steam_clip), [videos]);
 
-  const uniqueGameIds = useMemo(
-    () => ["all", ...new Set(steamClips.map((c) => c.game_id ?? "unknown"))].sort((a, b) =>
-      a === "all" ? -1 : b === "all" ? 1 : a.localeCompare(b)
-    ),
+  const uniqueClipGameIds = useMemo(
+    () =>
+      ["all", ...Array.from(new Set(steamClips.map((c) => c.game_id ?? "unknown"))).sort()],
     [steamClips]
+  );
+
+  const uniqueVideoGameIds = useMemo(
+    () =>
+      [
+        "all",
+        ...Array.from(
+          new Set(exportedVideos.map((v) => v.game_id ?? "").filter(Boolean))
+        ).sort(),
+      ],
+    [exportedVideos]
   );
 
   const filteredClips = useMemo(
@@ -181,10 +266,18 @@ function Content() {
     [steamClips, clipGameFilter, clipTypeFilter]
   );
 
-  // ── Helper: display name for a game id ───────────────────────────────────
+  const filteredExportedVideos = useMemo(
+    () =>
+      exportedVideos.filter(
+        (v) => videoGameFilter === "all" || v.game_id === videoGameFilter
+      ),
+    [exportedVideos, videoGameFilter]
+  );
+
+  // ── Game name helper ──────────────────────────────────────────────────────
   const gameName = useCallback(
     (gameId: string | undefined): string => {
-      if (!gameId || gameId === "unknown") return "Unknown Game";
+      if (!gameId || gameId === "unknown" || gameId === "") return "Unknown Game";
       return gameNames[gameId] ?? `App ${gameId}`;
     },
     [gameNames]
@@ -194,11 +287,17 @@ function Content() {
   const refreshVideos = useCallback(async () => {
     setLoading(true);
     try {
-      const [files, names] = await Promise.all([getVideoFiles(), getGameNames()]);
+      const files = await getVideoFiles();
       setVideos(files);
-      setGameNames(names);
     } catch {
       toaster.toast({ title: "Error", body: "Failed to load video files" });
+    }
+    // Game names are best-effort; don't block video list on failure
+    try {
+      const names = await getGameNames();
+      setGameNames(names);
+    } catch {
+      // silently ignore — numeric App IDs will be shown as fallback
     }
     setLoading(false);
   }, []);
@@ -219,17 +318,15 @@ function Content() {
       if (creds.client_id) setClientId(creds.client_id);
       if (creds.client_secret) setClientSecret(creds.client_secret);
     });
+    getSettings().then((s) => setPluginSettings(s));
   }, [refreshVideos, refreshAuthStatus]);
 
-  // ── Event listeners (update UI state) ────────────────────────────────────
+  // ── Event listeners ───────────────────────────────────────────────────────
   useEffect(() => {
     const uploadListener = addEventListener<[UploadProgress]>(
       "upload_progress",
-      (progress) => {
-        setUploadProgress(progress);
-      }
+      (progress) => setUploadProgress(progress)
     );
-
     const conversionListener = addEventListener<[ConversionProgress]>(
       "conversion_progress",
       (progress) => {
@@ -237,7 +334,6 @@ function Content() {
         if (progress.status === "complete") refreshVideos();
       }
     );
-
     return () => {
       removeEventListener("upload_progress", uploadListener);
       removeEventListener("conversion_progress", conversionListener);
@@ -301,6 +397,16 @@ function Content() {
     toaster.toast({ title: "Disconnected", body: "YouTube account unlinked" });
   };
 
+  const handleToggleSubfolders = async () => {
+    const next = { ...pluginSettings, use_game_subfolders: !pluginSettings.use_game_subfolders };
+    const result = await saveSettings(next);
+    if (result.success) {
+      setPluginSettings(next);
+    } else {
+      toaster.toast({ title: "Error", body: result.error ?? "Failed to save settings" });
+    }
+  };
+
   // ── Upload handlers ───────────────────────────────────────────────────────
   const handleSelectForUpload = (video: VideoFile) => {
     setSelectedVideo(video);
@@ -326,9 +432,16 @@ function Content() {
     }
   };
 
-  // ── Delete clip handler ───────────────────────────────────────────────────
+  // ── Clip handlers ─────────────────────────────────────────────────────────
+  const handleExportClip = async (clip: VideoFile) => {
+    const result = await convertSteamClip(clip.path, clip.game_id ?? "");
+    if (!result.success) {
+      toaster.toast({ title: "Export Error", body: result.error ?? "Failed to start export" });
+    }
+  };
+
   const handleDeleteClip = async (clip: VideoFile) => {
-    const result = await deleteClip(clip.path);
+    const result = await deleteSteamClip(clip.path);
     if (result.success) {
       refreshVideos();
       toaster.toast({ title: "Deleted", body: `Clip "${clip.name}" deleted` });
@@ -337,11 +450,24 @@ function Content() {
     }
   };
 
-  // ── Export Steam clip handler ─────────────────────────────────────────────
-  const handleExportClip = async (clip: VideoFile) => {
-    const result = await convertSteamClip(clip.path);
+  // ── Exported video handlers ───────────────────────────────────────────────
+  const handleConvertVideo = async (video: VideoFile) => {
+    const result = await convertToMp4(video.path, video.game_id ?? "");
     if (!result.success) {
-      toaster.toast({ title: "Export Error", body: result.error ?? "Failed to start export" });
+      toaster.toast({
+        title: "Conversion Error",
+        body: result.error ?? "Failed to start conversion",
+      });
+    }
+  };
+
+  const handleDeleteVideo = async (video: VideoFile) => {
+    const result = await deleteVideo(video.path);
+    if (result.success) {
+      refreshVideos();
+      toaster.toast({ title: "Deleted", body: `"${video.name}" deleted` });
+    } else {
+      toaster.toast({ title: "Error", body: result.error ?? "Failed to delete video" });
     }
   };
 
@@ -352,8 +478,23 @@ function Content() {
         <PanelSection>
           <PanelSectionRow>
             <ButtonItem layout="below" onClick={() => setView("list")}>
-              ← Back to Videos
+              Back
             </ButtonItem>
+          </PanelSectionRow>
+        </PanelSection>
+
+        <PanelSection title="Export Settings">
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={handleToggleSubfolders}>
+              Game Subfolders: {pluginSettings.use_game_subfolders ? "ON" : "OFF"}
+            </ButtonItem>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <div style={{ fontSize: "11px", color: "#aaa" }}>
+              {pluginSettings.use_game_subfolders
+                ? "Videos saved to ~/Videos/<game name>/"
+                : "Videos saved to ~/Videos/"}
+            </div>
           </PanelSectionRow>
         </PanelSection>
 
@@ -369,7 +510,7 @@ function Content() {
               <PanelSectionRow>
                 <TextField
                   label="Client ID"
-                  description="From Google Cloud Console → OAuth 2.0 Client IDs"
+                  description="From Google Cloud Console -> OAuth 2.0 Client IDs"
                   value={clientId}
                   onChange={(e) => setClientId(e.target.value)}
                 />
@@ -409,9 +550,7 @@ function Content() {
                   </PanelSectionRow>
                   <PanelSectionRow>
                     <div style={{ fontSize: "12px", color: "#aaa" }}>
-                      {authPolling
-                        ? "⏳ Waiting for authorization…"
-                        : "Enter this code at the URL above"}
+                      {authPolling ? "Waiting for authorization..." : "Enter this code above"}
                     </div>
                   </PanelSectionRow>
                 </>
@@ -452,12 +591,8 @@ function Content() {
       <>
         <PanelSection>
           <PanelSectionRow>
-            <ButtonItem
-              layout="below"
-              onClick={() => setView("list")}
-              disabled={isUploading}
-            >
-              ← Back to Videos
+            <ButtonItem layout="below" onClick={() => setView("videos")} disabled={isUploading}>
+              Back
             </ButtonItem>
           </PanelSectionRow>
         </PanelSection>
@@ -492,33 +627,25 @@ function Content() {
                   onChange={(e) => setUploadTags(e.target.value)}
                 />
               </PanelSectionRow>
-              <PanelSectionRow>
-                {/* Cycle through privacy options instead of DropdownItem
-                    (DropdownItem closes the panel on selection in Steam's QAM) */}
-                <ButtonItem
-                  layout="below"
-                  onClick={() =>
-                    setUploadPrivacy(cycleOption(uploadPrivacy, privacyOptions))
-                  }
-                >
-                  Privacy: {privacyLabel[uploadPrivacy]} ▶
-                </ButtonItem>
-              </PanelSectionRow>
+              <InlineSelect
+                label="Privacy"
+                value={uploadPrivacy}
+                options={privacyOptions.map((v) => ({ value: v, label: privacyLabel[v] }))}
+                onChange={(v) => setUploadPrivacy(v)}
+              />
               <PanelSectionRow>
                 <ButtonItem
                   layout="below"
                   onClick={handleUpload}
                   disabled={!isAuthenticated}
                 >
-                  {isAuthenticated
-                    ? "Upload to YouTube"
-                    : "Connect YouTube first (Settings ⚙)"}
+                  {isAuthenticated ? "Upload to YouTube" : "Connect YouTube in Settings first"}
                 </ButtonItem>
               </PanelSectionRow>
               {hasError && (
                 <PanelSectionRow>
                   <div style={{ fontSize: "12px", color: "#f44" }}>
-                    ✗ {uploadProgress?.error}
+                    Error: {uploadProgress?.error}
                   </div>
                 </PanelSectionRow>
               )}
@@ -530,7 +657,7 @@ function Content() {
               <ProgressBarWithInfo
                 nProgress={uploadProgress?.progress ?? 0}
                 sOperationText={
-                  uploadProgress?.status === "starting" ? "Starting…" : "Uploading…"
+                  uploadProgress?.status === "starting" ? "Starting..." : "Uploading..."
                 }
                 sTimeRemaining={`${uploadProgress?.progress ?? 0}%`}
               />
@@ -540,9 +667,7 @@ function Content() {
           {isComplete && (
             <PanelSectionRow>
               <div style={{ fontSize: "12px", color: "#4CAF50", wordBreak: "break-all" }}>
-                ✓ Upload complete!
-                <br />
-                {uploadProgress?.video_url}
+                Upload complete! {uploadProgress?.video_url}
               </div>
             </PanelSectionRow>
           )}
@@ -558,61 +683,46 @@ function Content() {
       clips: "Manual Clips",
       video: "Background Recordings",
     };
-
-    // Label for current game filter
-    const gameFilterLabel =
-      clipGameFilter === "all"
-        ? "All Games"
-        : gameName(clipGameFilter);
+    const typeOptions: Array<"all" | "clips" | "video"> = ["all", "clips", "video"];
 
     return (
       <>
         <PanelSection>
           <PanelSectionRow>
             <ButtonItem layout="below" onClick={() => setView("list")}>
-              ← Back to Videos
+              Back
             </ButtonItem>
           </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
-              {loading ? "Scanning…" : "↺ Refresh"}
+              {loading ? "Scanning..." : "Refresh"}
             </ButtonItem>
           </PanelSectionRow>
         </PanelSection>
 
         <PanelSection title="Filters">
-          {/* Game filter: cycles through All → each game → All */}
-          <PanelSectionRow>
-            <ButtonItem
-              layout="below"
-              onClick={() =>
-                setClipGameFilter(cycleOption(clipGameFilter, uniqueGameIds))
-              }
-            >
-              Game: {gameFilterLabel} ▶
-            </ButtonItem>
-          </PanelSectionRow>
-          {/* Type filter: cycles through All → Manual Clips → Background → All */}
-          <PanelSectionRow>
-            <ButtonItem
-              layout="below"
-              onClick={() =>
-                setClipTypeFilter(
-                  cycleOption(clipTypeFilter, ["all", "clips", "video"])
-                )
-              }
-            >
-              Type: {typeLabel[clipTypeFilter]} ▶
-            </ButtonItem>
-          </PanelSectionRow>
+          <InlineSelect
+            label="Game"
+            value={clipGameFilter}
+            options={uniqueClipGameIds.map((g) => ({
+              value: g,
+              label: g === "all" ? "All Games" : gameName(g),
+            }))}
+            onChange={(v) => setClipGameFilter(v)}
+          />
+          <InlineSelect
+            label="Type"
+            value={clipTypeFilter}
+            options={typeOptions.map((v) => ({ value: v, label: typeLabel[v] }))}
+            onChange={(v) => setClipTypeFilter(v)}
+          />
         </PanelSection>
 
         <PanelSection title={`Steam Clips (${filteredClips.length})`}>
           {filteredClips.length === 0 && !loading && (
             <PanelSectionRow>
               <div style={{ fontSize: "12px", color: "#aaa" }}>
-                No clips found. Steam records clips in
-                ~/.local/share/Steam/userdata/[id]/gamerecordings/clips or video.
+                No clips found. Steam records clips in gamerecordings/clips or video.
               </div>
             </PanelSectionRow>
           )}
@@ -644,12 +754,12 @@ function Content() {
                   onClick={() => handleExportClip(clip)}
                   disabled={converting}
                 >
-                  {converting ? "Converting…" : "Export to MP4 (~/Videos/)"}
+                  {converting ? "Converting..." : "Export to MP4"}
                 </ButtonItem>
               </PanelSectionRow>
               <PanelSectionRow>
                 <ButtonItem layout="below" onClick={() => handleDeleteClip(clip)}>
-                  🗑 Delete Clip
+                  Delete Clip
                 </ButtonItem>
               </PanelSectionRow>
             </PanelSection>
@@ -659,74 +769,110 @@ function Content() {
     );
   }
 
-  // ── Video list view (default) ─────────────────────────────────────────────
+  // ── Exported Videos submenu ───────────────────────────────────────────────
+  if (view === "videos") {
+    return (
+      <>
+        <PanelSection>
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={() => setView("list")}>
+              Back
+            </ButtonItem>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
+              {loading ? "Scanning..." : "Refresh"}
+            </ButtonItem>
+          </PanelSectionRow>
+        </PanelSection>
+
+        {uniqueVideoGameIds.length > 1 && (
+          <PanelSection title="Filter">
+            <InlineSelect
+              label="Game"
+              value={videoGameFilter}
+              options={uniqueVideoGameIds.map((g) => ({
+                value: g,
+                label: g === "all" ? "All Games" : gameName(g),
+              }))}
+              onChange={(v) => setVideoGameFilter(v)}
+            />
+          </PanelSection>
+        )}
+
+        <PanelSection title={`Exported Videos (${filteredExportedVideos.length})`}>
+          {filteredExportedVideos.length === 0 && !loading && (
+            <PanelSectionRow>
+              <div style={{ fontSize: "12px", color: "#aaa" }}>
+                No exported videos found. Export Steam clips or check ~/Videos.
+              </div>
+            </PanelSectionRow>
+          )}
+          {filteredExportedVideos.map((video) => (
+            <PanelSection key={video.path}>
+              <PanelSectionRow>
+                <div style={{ fontSize: "12px", fontWeight: "bold", wordBreak: "break-all" }}>
+                  {video.name}
+                </div>
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <div style={{ fontSize: "11px", color: "#aaa" }}>
+                  {video.game_id ? `${gameName(video.game_id)} · ` : ""}
+                  {formatSize(video.size)} · {video.ext.toUpperCase()}
+                </div>
+              </PanelSectionRow>
+              {video.needs_conversion && (
+                <PanelSectionRow>
+                  <ButtonItem
+                    layout="below"
+                    onClick={() => handleConvertVideo(video)}
+                    disabled={converting}
+                  >
+                    {converting ? "Converting..." : "Convert to MP4"}
+                  </ButtonItem>
+                </PanelSectionRow>
+              )}
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={() => handleSelectForUpload(video)}>
+                  Upload to YouTube
+                </ButtonItem>
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={() => handleDeleteVideo(video)}>
+                  Delete
+                </ButtonItem>
+              </PanelSectionRow>
+            </PanelSection>
+          ))}
+        </PanelSection>
+      </>
+    );
+  }
+
+  // ── Main list view ────────────────────────────────────────────────────────
   return (
     <>
       <PanelSection>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => setView("settings")}>
-            ⚙ Settings {isAuthenticated ? "· YouTube ✓" : "· Connect YouTube"}
+            Settings {isAuthenticated ? "(YouTube connected)" : "(YouTube not connected)"}
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => setView("clips")}>
-            🎮 Steam Clips ({steamClips.length})
+            Steam Clips ({steamClips.length})
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => setView("videos")}>
+            Exported Videos ({exportedVideos.length})
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
-            {loading ? "Scanning…" : "↺ Refresh Videos"}
+            {loading ? "Scanning..." : "Refresh"}
           </ButtonItem>
         </PanelSectionRow>
-      </PanelSection>
-
-      <PanelSection title={`Exported Videos (${exportedVideos.length})`}>
-        {exportedVideos.length === 0 && !loading && (
-          <PanelSectionRow>
-            <div style={{ fontSize: "12px", color: "#aaa" }}>
-              No exported videos found. Use 🎮 Steam Clips to export recordings to
-              ~/Videos/, or check ~/Videos or
-              ~/.local/share/Steam/userdata/[id]/760/remote.
-            </div>
-          </PanelSectionRow>
-        )}
-        {exportedVideos.map((video) => (
-          <PanelSection key={video.path}>
-            <PanelSectionRow>
-              <div
-                style={{
-                  fontSize: "12px",
-                  fontWeight: "bold",
-                  wordBreak: "break-all",
-                  marginBottom: "2px",
-                }}
-              >
-                {video.name}
-              </div>
-            </PanelSectionRow>
-            <PanelSectionRow>
-              <div style={{ fontSize: "11px", color: "#aaa" }}>
-                {formatSize(video.size)} · {video.ext.toUpperCase()}
-              </div>
-            </PanelSectionRow>
-            {video.needs_conversion && (
-              <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  onClick={() => convertToMp4(video.path)}
-                  disabled={converting}
-                >
-                  {converting ? "Converting…" : "Convert to MP4"}
-                </ButtonItem>
-              </PanelSectionRow>
-            )}
-            <PanelSectionRow>
-              <ButtonItem layout="below" onClick={() => handleSelectForUpload(video)}>
-                Upload to YouTube
-              </ButtonItem>
-            </PanelSectionRow>
-          </PanelSection>
-        ))}
       </PanelSection>
     </>
   );
@@ -738,7 +884,6 @@ function Content() {
 export default definePlugin(() => {
   console.log("Video Uploader plugin initializing");
 
-  // Plugin-level listeners show toast notifications even when the panel is closed
   const uploadListener = addEventListener<[UploadProgress]>(
     "upload_progress",
     (progress) => {
@@ -779,7 +924,6 @@ export default definePlugin(() => {
     content: <Content />,
     icon: <FaYoutube />,
     onDismount() {
-      console.log("Video Uploader unloading");
       removeEventListener("upload_progress", uploadListener);
       removeEventListener("conversion_progress", conversionListener);
     },

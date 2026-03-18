@@ -769,7 +769,7 @@ function Content() {
               <DialogButton onClick={() => setView("list")} style={{ flex: 1, minWidth: 0 }}>
                 Back
               </DialogButton>
-              <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px" }}>
+              <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {loading ? "..." : <FaSyncAlt />}
               </DialogButton>
             </Focusable>
@@ -861,7 +861,7 @@ function Content() {
                   <DialogButton
                     onClick={() => handleDeleteClip(clip)}
                     disabled={converting}
-                    style={{ minWidth: 0, width: "auto", padding: "0 12px" }}
+                    style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}
                   >
                     <FaTrash />
                   </DialogButton>
@@ -884,7 +884,7 @@ function Content() {
               <DialogButton onClick={() => setView("list")} style={{ flex: 1, minWidth: 0 }}>
                 Back
               </DialogButton>
-              <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px" }}>
+              <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {loading ? "..." : <FaSyncAlt />}
               </DialogButton>
             </Focusable>
@@ -965,7 +965,7 @@ function Content() {
                   </DialogButton>
                   <DialogButton
                     onClick={() => handleDeleteVideo(video)}
-                    style={{ minWidth: 0, width: "auto", padding: "0 12px" }}
+                    style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}
                   >
                     <FaTrash />
                   </DialogButton>

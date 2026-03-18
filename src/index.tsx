@@ -18,7 +18,7 @@ import {
   definePlugin,
   toaster,
 } from "@decky/api";
-import { useState, useEffect, useCallback, useMemo, CSSProperties } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { FaYoutube } from "react-icons/fa";
 
 // ---------------------------------------------------------------------------
@@ -138,43 +138,6 @@ const QUALITY_OPTIONS = [
 // doesn't overlap any fields.  The upload itself runs in the background after
 // the modal closes — progress / completion is reported via toast notifications.
 // ---------------------------------------------------------------------------
-// A DialogButton that shows a visible highlight when focused via gamepad.
-// ---------------------------------------------------------------------------
-function FocusableOption({
-  selected,
-  onClick,
-  style,
-  children,
-}: {
-  selected: boolean;
-  onClick: () => void;
-  style?: CSSProperties;
-  children: React.ReactNode;
-}) {
-  const [focused, setFocused] = useState(false);
-  return (
-    <DialogButton
-      onClick={onClick}
-      onGamepadFocus={() => setFocused(true)}
-      onGamepadBlur={() => setFocused(false)}
-      style={{
-        ...style,
-        background: selected
-          ? "rgba(255,255,255,0.2)"
-          : focused
-            ? "rgba(255,255,255,0.12)"
-            : "rgba(255,255,255,0.05)",
-        color: selected ? "#fff" : focused ? "#ddd" : "#aaa",
-        fontWeight: selected ? "bold" : "normal",
-        outline: focused ? "2px solid rgba(255,255,255,0.5)" : "none",
-      }}
-    >
-      {children}
-    </DialogButton>
-  );
-}
-
-// ---------------------------------------------------------------------------
 function UploadModal({
   closeModal,
   video,
@@ -243,14 +206,18 @@ function UploadModal({
         </div>
         <Focusable style={{ display: "flex", gap: "8px" }}>
           {(["private", "unlisted", "public"] as const).map((opt) => (
-            <FocusableOption
+            <DialogButton
               key={opt}
-              selected={privacy === opt}
               onClick={() => setPrivacy(opt)}
-              style={{ flex: 1, minWidth: 0 }}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontWeight: privacy === opt ? "bold" : "normal",
+                borderBottom: privacy === opt ? "2px solid #fff" : "2px solid transparent",
+              }}
             >
               {privacyLabels[opt]}
-            </FocusableOption>
+            </DialogButton>
           ))}
         </Focusable>
       </DialogBody>
@@ -310,17 +277,21 @@ function ExportModal({
         </div>
         <Focusable style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
           {QUALITY_OPTIONS.map((opt) => (
-            <FocusableOption
+            <DialogButton
               key={opt.value}
-              selected={quality === opt.value}
               onClick={() => setQuality(opt.value)}
-              style={{ width: "100%", textAlign: "left" }}
+              style={{
+                width: "100%",
+                textAlign: "left",
+                fontWeight: quality === opt.value ? "bold" : "normal",
+                borderLeft: quality === opt.value ? "3px solid #fff" : "3px solid transparent",
+              }}
             >
               {opt.label}
               <span style={{ marginLeft: "8px", fontSize: "11px", color: "#777" }}>
                 {opt.description}
               </span>
-            </FocusableOption>
+            </DialogButton>
           ))}
         </Focusable>
       </DialogBody>

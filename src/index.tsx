@@ -2,8 +2,7 @@ import {
   ButtonItem,
   ConfirmModal,
   DialogBody,
-  DialogButton,
-  Focusable,
+  DropdownItem,
   PanelSection,
   PanelSectionRow,
   ProgressBarWithInfo,
@@ -152,11 +151,11 @@ function UploadModal({
   const [tags, setTags] = useState("");
   const [privacy, setPrivacy] = useState<"private" | "unlisted" | "public">("private");
 
-  const privacyLabels: Record<string, string> = {
-    private: "Private",
-    unlisted: "Unlisted",
-    public: "Public",
-  };
+  const privacyOptions = [
+    { data: "private" as const, label: "Private" },
+    { data: "unlisted" as const, label: "Unlisted" },
+    { data: "public" as const, label: "Public" },
+  ];
 
   return (
     <ConfirmModal
@@ -201,25 +200,12 @@ function UploadModal({
           value={tags}
           onChange={(e) => setTags(e.target.value)}
         />
-        <div style={{ fontSize: "12px", color: "#ccc", marginTop: "12px", marginBottom: "8px" }}>
-          Privacy
-        </div>
-        <Focusable style={{ display: "flex", gap: "8px" }}>
-          {(["private", "unlisted", "public"] as const).map((opt) => (
-            <DialogButton
-              key={opt}
-              onClick={() => setPrivacy(opt)}
-              style={{
-                flex: 1,
-                minWidth: 0,
-                fontWeight: privacy === opt ? "bold" : "normal",
-                borderBottom: privacy === opt ? "2px solid #fff" : "2px solid transparent",
-              }}
-            >
-              {privacyLabels[opt]}
-            </DialogButton>
-          ))}
-        </Focusable>
+        <DropdownItem
+          label="Privacy"
+          rgOptions={privacyOptions}
+          selectedOption={privacy}
+          onChange={(opt) => setPrivacy(opt.data)}
+        />
       </DialogBody>
     </ConfirmModal>
   );
@@ -269,31 +255,16 @@ function ExportModal({
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <div style={{ marginTop: "12px", fontSize: "12px", color: "#ccc", marginBottom: "4px" }}>
-          Quality
-        </div>
-        <div style={{ fontSize: "10px", color: "#777", marginBottom: "8px" }}>
-          Original quality is set in Steam &gt; Settings &gt; Game Recording
-        </div>
-        <Focusable style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-          {QUALITY_OPTIONS.map((opt) => (
-            <DialogButton
-              key={opt.value}
-              onClick={() => setQuality(opt.value)}
-              style={{
-                width: "100%",
-                textAlign: "left",
-                fontWeight: quality === opt.value ? "bold" : "normal",
-                borderLeft: quality === opt.value ? "3px solid #fff" : "3px solid transparent",
-              }}
-            >
-              {opt.label}
-              <span style={{ marginLeft: "8px", fontSize: "11px", color: "#777" }}>
-                {opt.description}
-              </span>
-            </DialogButton>
-          ))}
-        </Focusable>
+        <DropdownItem
+          label="Quality"
+          description="Original quality is set in Steam > Settings > Game Recording"
+          rgOptions={QUALITY_OPTIONS.map((opt) => ({
+            data: opt.value,
+            label: `${opt.label} — ${opt.description}`,
+          }))}
+          selectedOption={quality}
+          onChange={(opt) => setQuality(opt.data)}
+        />
       </DialogBody>
     </ConfirmModal>
   );

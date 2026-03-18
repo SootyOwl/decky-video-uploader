@@ -1,4 +1,5 @@
 import os
+import re
 import glob
 import shutil
 import tempfile
@@ -66,6 +67,40 @@ class Plugin:
     # ------------------------------------------------------------------
     # Video discovery
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _read_acf_name(path: str):
+        """Return the game name from a Steam appmanifest_*.acf file, or None."""
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    m = re.search(r'"name"\s+"([^"]+)"', line)
+                    if m:
+                        return m.group(1)
+        except Exception:
+            pass
+        return None
+
+    async def get_game_names(self) -> dict:
+        """Return a mapping of app_id (string) → game name from local appmanifest files."""
+        user_home = decky.DECKY_USER_HOME
+        names: dict = {}
+        steamapps_dirs = [
+            os.path.join(user_home, ".local", "share", "Steam", "steamapps"),
+            os.path.join(user_home, ".steam", "steam", "steamapps"),
+        ]
+        for steamapps_dir in steamapps_dirs:
+            if not os.path.isdir(steamapps_dir):
+                continue
+            for manifest in glob.glob(os.path.join(steamapps_dir, "appmanifest_*.acf")):
+                base = os.path.basename(manifest)
+                app_id = base.replace("appmanifest_", "").replace(".acf", "")
+                if not app_id.isdigit():
+                    continue
+                name = Plugin._read_acf_name(manifest)
+                if name:
+                    names[app_id] = name
+        return names
 
     def _get_custom_record_path(self, userdata_dir: str):
         """Read a custom Steam recording path from localconfig.vdf, if set."""

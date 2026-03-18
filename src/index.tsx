@@ -1,6 +1,5 @@
 import {
   ButtonItem,
-  DropdownItem,
   PanelSection,
   PanelSectionRow,
   ProgressBarWithInfo,
@@ -21,6 +20,7 @@ import { FaYoutube } from "react-icons/fa";
 // Backend callables
 // ---------------------------------------------------------------------------
 const getVideoFiles = callable<[], VideoFile[]>("get_video_files");
+const getGameNames = callable<[], Record<string, string>>("get_game_names");
 const convertToMp4 = callable<[source_path: string], CallResult>("convert_to_mp4");
 const convertSteamClip = callable<[clip_folder: string], CallResult>("convert_steam_clip");
 const deleteClip = callable<[clip_folder: string], CallResult>("delete_steam_clip");
@@ -122,12 +122,19 @@ function formatDate(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString();
 }
 
+/** Cycle through an array of options and return the next value */
+function cycleOption<T extends string>(current: T, options: T[]): T {
+  const idx = options.indexOf(current);
+  return options[(idx + 1) % options.length];
+}
+
 // ---------------------------------------------------------------------------
 // Content component
 // ---------------------------------------------------------------------------
 function Content() {
   const [view, setView] = useState<View>("list");
   const [videos, setVideos] = useState<VideoFile[]>([]);
+  const [gameNames, setGameNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<VideoFile | null>(null);
@@ -136,7 +143,7 @@ function Content() {
   const [uploadTitle, setUploadTitle] = useState("");
   const [uploadDescription, setUploadDescription] = useState("");
   const [uploadTags, setUploadTags] = useState("");
-  const [uploadPrivacy, setUploadPrivacy] = useState("private");
+  const [uploadPrivacy, setUploadPrivacy] = useState<"private" | "unlisted" | "public">("private");
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
 
   // Settings / auth
@@ -149,16 +156,18 @@ function Content() {
   // Conversion
   const [converting, setConverting] = useState(false);
 
-  // Clip filters
+  // Clip filters – "all" | specific game_id | specific type
   const [clipGameFilter, setClipGameFilter] = useState("all");
-  const [clipTypeFilter, setClipTypeFilter] = useState("all");
+  const [clipTypeFilter, setClipTypeFilter] = useState<"all" | "clips" | "video">("all");
 
   // ── Derived data ──────────────────────────────────────────────────────────
   const steamClips = useMemo(() => videos.filter((v) => v.is_steam_clip), [videos]);
   const exportedVideos = useMemo(() => videos.filter((v) => !v.is_steam_clip), [videos]);
 
   const uniqueGameIds = useMemo(
-    () => [...new Set(steamClips.map((c) => c.game_id ?? "unknown"))].sort(),
+    () => ["all", ...new Set(steamClips.map((c) => c.game_id ?? "unknown"))].sort((a, b) =>
+      a === "all" ? -1 : b === "all" ? 1 : a.localeCompare(b)
+    ),
     [steamClips]
   );
 
@@ -172,12 +181,22 @@ function Content() {
     [steamClips, clipGameFilter, clipTypeFilter]
   );
 
+  // ── Helper: display name for a game id ───────────────────────────────────
+  const gameName = useCallback(
+    (gameId: string | undefined): string => {
+      if (!gameId || gameId === "unknown") return "Unknown Game";
+      return gameNames[gameId] ?? `App ${gameId}`;
+    },
+    [gameNames]
+  );
+
   // ── Loaders ──────────────────────────────────────────────────────────────
   const refreshVideos = useCallback(async () => {
     setLoading(true);
     try {
-      const files = await getVideoFiles();
+      const [files, names] = await Promise.all([getVideoFiles(), getGameNames()]);
       setVideos(files);
+      setGameNames(names);
     } catch {
       toaster.toast({ title: "Error", body: "Failed to load video files" });
     }
@@ -412,6 +431,17 @@ function Content() {
 
   // ── Upload form view ──────────────────────────────────────────────────────
   if (view === "upload" && selectedVideo) {
+    const privacyOptions: Array<"private" | "unlisted" | "public"> = [
+      "private",
+      "unlisted",
+      "public",
+    ];
+    const privacyLabel: Record<string, string> = {
+      private: "Private",
+      unlisted: "Unlisted",
+      public: "Public",
+    };
+
     const isUploading =
       uploadProgress != null &&
       (uploadProgress.status === "starting" || uploadProgress.status === "uploading");
@@ -463,16 +493,16 @@ function Content() {
                 />
               </PanelSectionRow>
               <PanelSectionRow>
-                <DropdownItem
-                  label="Privacy"
-                  rgOptions={[
-                    { data: "private", label: "Private" },
-                    { data: "unlisted", label: "Unlisted" },
-                    { data: "public", label: "Public" },
-                  ]}
-                  selectedOption={uploadPrivacy}
-                  onChange={(opt) => setUploadPrivacy(opt.data)}
-                />
+                {/* Cycle through privacy options instead of DropdownItem
+                    (DropdownItem closes the panel on selection in Steam's QAM) */}
+                <ButtonItem
+                  layout="below"
+                  onClick={() =>
+                    setUploadPrivacy(cycleOption(uploadPrivacy, privacyOptions))
+                  }
+                >
+                  Privacy: {privacyLabel[uploadPrivacy]} ▶
+                </ButtonItem>
               </PanelSectionRow>
               <PanelSectionRow>
                 <ButtonItem
@@ -523,6 +553,18 @@ function Content() {
 
   // ── Steam Clips submenu ───────────────────────────────────────────────────
   if (view === "clips") {
+    const typeLabel: Record<string, string> = {
+      all: "All Types",
+      clips: "Manual Clips",
+      video: "Background Recordings",
+    };
+
+    // Label for current game filter
+    const gameFilterLabel =
+      clipGameFilter === "all"
+        ? "All Games"
+        : gameName(clipGameFilter);
+
     return (
       <>
         <PanelSection>
@@ -539,28 +581,29 @@ function Content() {
         </PanelSection>
 
         <PanelSection title="Filters">
+          {/* Game filter: cycles through All → each game → All */}
           <PanelSectionRow>
-            <DropdownItem
-              label="Game"
-              rgOptions={[
-                { data: "all", label: "All Games" },
-                ...uniqueGameIds.map((g) => ({ data: g, label: `App ${g}` })),
-              ]}
-              selectedOption={clipGameFilter}
-              onChange={(opt) => setClipGameFilter(opt.data)}
-            />
+            <ButtonItem
+              layout="below"
+              onClick={() =>
+                setClipGameFilter(cycleOption(clipGameFilter, uniqueGameIds))
+              }
+            >
+              Game: {gameFilterLabel} ▶
+            </ButtonItem>
           </PanelSectionRow>
+          {/* Type filter: cycles through All → Manual Clips → Background → All */}
           <PanelSectionRow>
-            <DropdownItem
-              label="Type"
-              rgOptions={[
-                { data: "all", label: "All Types" },
-                { data: "clips", label: "Manual Clips" },
-                { data: "video", label: "Background Recordings" },
-              ]}
-              selectedOption={clipTypeFilter}
-              onChange={(opt) => setClipTypeFilter(opt.data)}
-            />
+            <ButtonItem
+              layout="below"
+              onClick={() =>
+                setClipTypeFilter(
+                  cycleOption(clipTypeFilter, ["all", "clips", "video"])
+                )
+              }
+            >
+              Type: {typeLabel[clipTypeFilter]} ▶
+            </ButtonItem>
           </PanelSectionRow>
         </PanelSection>
 
@@ -577,7 +620,7 @@ function Content() {
             <PanelSection key={clip.path}>
               <PanelSectionRow>
                 <div style={{ fontSize: "12px", fontWeight: "bold" }}>
-                  App {clip.game_id ?? "Unknown"}
+                  {gameName(clip.game_id)}
                   <span
                     style={{
                       marginLeft: "8px",
@@ -593,11 +636,6 @@ function Content() {
               <PanelSectionRow>
                 <div style={{ fontSize: "11px", color: "#aaa" }}>
                   {formatSize(clip.size)} · {formatDate(clip.modified)}
-                </div>
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <div style={{ fontSize: "10px", color: "#666", wordBreak: "break-all" }}>
-                  {clip.name}
                 </div>
               </PanelSectionRow>
               <PanelSectionRow>

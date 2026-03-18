@@ -1,9 +1,16 @@
 import {
   ButtonItem,
+  ConfirmModal,
+  DialogBody,
+  DialogButton,
+  DropdownItem,
+  Focusable,
   PanelSection,
   PanelSectionRow,
   ProgressBarWithInfo,
+  showModal,
   TextField,
+  ToggleField,
   staticClasses,
 } from "@decky/ui";
 import {
@@ -14,7 +21,7 @@ import {
   toaster,
 } from "@decky/api";
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { FaYoutube } from "react-icons/fa";
+import { FaSyncAlt, FaTrash, FaYoutube } from "react-icons/fa";
 
 // ---------------------------------------------------------------------------
 // Backend callables
@@ -23,10 +30,10 @@ const getVideoFiles = callable<[], VideoFile[]>("get_video_files");
 const getGameNames = callable<[], Record<string, string>>("get_game_names");
 const getSettings = callable<[], PluginSettings>("get_settings");
 const saveSettings = callable<[settings: PluginSettings], CallResult>("save_settings");
-const convertToMp4 = callable<[source_path: string, game_id: string], CallResult>(
+const convertToMp4 = callable<[source_path: string, game_id: string, output_name: string, quality: string], CallResult>(
   "convert_to_mp4"
 );
-const convertSteamClip = callable<[clip_folder: string, game_id: string], CallResult>(
+const convertSteamClip = callable<[clip_folder: string, game_id: string, output_name: string, quality: string], CallResult>(
   "convert_steam_clip"
 );
 const deleteSteamClip = callable<[clip_folder: string], CallResult>("delete_steam_clip");
@@ -65,6 +72,7 @@ interface VideoFile {
   is_steam_clip: boolean;
   game_id?: string;
   clip_type?: string;
+  subfolder?: string;
 }
 
 interface PluginSettings {
@@ -111,13 +119,160 @@ interface UploadProgress {
 }
 
 interface ConversionProgress {
-  status: "started" | "complete" | "error";
+  status: "started" | "converting" | "complete" | "error";
+  progress?: number;
   output_path?: string;
   size?: number;
   error?: string;
 }
 
-type View = "list" | "clips" | "videos" | "settings" | "upload";
+type View = "list" | "clips" | "videos" | "settings";
+
+const QUALITY_OPTIONS = [
+  { value: "copy", label: "Original", description: "Fast — no re-encoding" },
+  { value: "high", label: "Smaller file", description: "Re-encode, ~40% smaller" },
+  { value: "medium", label: "Smallest file", description: "Re-encode, ~60% smaller" },
+] as const;
+
+// ---------------------------------------------------------------------------
+// UploadModal — full-screen modal for YouTube upload form.
+//
+// Opens over everything (including the QAM panel) so the on-screen keyboard
+// doesn't overlap any fields.  The upload itself runs in the background after
+// the modal closes — progress / completion is reported via toast notifications.
+// ---------------------------------------------------------------------------
+function UploadModal({
+  closeModal,
+  video,
+  authenticated,
+}: {
+  closeModal: () => void;
+  video: VideoFile;
+  authenticated: boolean;
+}) {
+  const [title, setTitle] = useState(video.name.replace(/\.[^/.]+$/, ""));
+  const [description, setDescription] = useState("");
+  const [tags, setTags] = useState("");
+  const [privacy, setPrivacy] = useState<"private" | "unlisted" | "public">("private");
+
+  const privacyOptions = [
+    { data: "private" as const, label: "Private" },
+    { data: "unlisted" as const, label: "Unlisted" },
+    { data: "public" as const, label: "Public" },
+  ];
+
+  return (
+    <ConfirmModal
+      strTitle="Upload to YouTube"
+      strOKButtonText={authenticated ? "Upload" : "YouTube not connected"}
+      bOKDisabled={!authenticated}
+      strCancelButtonText="Cancel"
+      onOK={() => {
+        uploadToYoutube(
+          video.path,
+          title || video.name,
+          description,
+          tags,
+          privacy
+        ).then((result) => {
+          if (result.success) {
+            toaster.toast({ title: "Upload Started", body: `Uploading "${title || video.name}"...` });
+          } else {
+            toaster.toast({ title: "Upload Error", body: result.error ?? "Failed to start upload" });
+          }
+        });
+      }}
+      onCancel={closeModal}
+      closeModal={closeModal}
+    >
+      <DialogBody>
+        <div style={{ fontSize: "12px", color: "#aaa", marginBottom: "12px" }}>
+          {video.name} ({formatSize(video.size)})
+        </div>
+        <TextField
+          label="Title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+        <TextField
+          label="Description"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+        <TextField
+          label="Tags (comma-separated)"
+          value={tags}
+          onChange={(e) => setTags(e.target.value)}
+        />
+        <DropdownItem
+          label="Privacy"
+          rgOptions={privacyOptions}
+          selectedOption={privacy}
+          onChange={(opt) => setPrivacy(opt.data)}
+        />
+      </DialogBody>
+    </ConfirmModal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ExportModal — full-screen modal for naming a clip before MP4 export.
+// ---------------------------------------------------------------------------
+function ExportModal({
+  closeModal,
+  clip,
+  gameName: gName,
+}: {
+  closeModal: () => void;
+  clip: VideoFile;
+  gameName: string;
+}) {
+  const defaultName = `${gName} - ${clip.clip_type === "video" ? "Recording" : "Clip"} ${formatDateTime(clip.modified)}`;
+  const [name, setName] = useState(defaultName);
+  const [quality, setQuality] = useState("copy");
+
+  return (
+    <ConfirmModal
+      strTitle="Export to MP4"
+      strOKButtonText="Export"
+      strCancelButtonText="Cancel"
+      onOK={() => {
+        convertSteamClip(clip.path, clip.game_id ?? "", name, quality).then((result) => {
+          if (result.success) {
+            toaster.toast({ title: "Export Started", body: `Exporting "${name}"...` });
+          } else {
+            toaster.toast({ title: "Export Error", body: result.error ?? "Failed to start export" });
+          }
+        });
+      }}
+      onCancel={closeModal}
+      closeModal={closeModal}
+    >
+      <DialogBody>
+        <div style={{ fontSize: "12px", color: "#aaa", marginBottom: "12px" }}>
+          {gName} · {clip.clip_type === "video" ? "Background Recording" : "Manual Clip"}
+          <br />
+          {formatSize(clip.size)} · {formatDate(clip.modified)}
+        </div>
+        <TextField
+          label="Export Name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <DropdownItem
+          label="Quality"
+          description="Original quality is set in Steam > Settings > Game Recording"
+          rgOptions={QUALITY_OPTIONS.map((opt) => ({
+            data: opt.value,
+            label: `${opt.label} — ${opt.description}`,
+          }))}
+          selectedOption={quality}
+          onChange={(opt) => setQuality(opt.data)}
+        />
+      </DialogBody>
+    </ConfirmModal>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -131,6 +286,12 @@ function formatSize(bytes: number): string {
 
 function formatDate(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString();
+}
+
+function formatDateTime(ts: number): string {
+  const d = new Date(ts * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}${pad(d.getMinutes())}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +322,7 @@ function InlineSelect<T extends string>({
   const selected = options.find((o) => o.value === value);
 
   return (
-    <>
+    <Focusable>
       <PanelSectionRow>
         <ButtonItem
           layout="below"
@@ -193,7 +354,7 @@ function InlineSelect<T extends string>({
             </div>
           </PanelSectionRow>
         ))}
-    </>
+    </Focusable>
   );
 }
 
@@ -209,14 +370,6 @@ function Content() {
   });
   const [loading, setLoading] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [selectedVideo, setSelectedVideo] = useState<VideoFile | null>(null);
-
-  // Upload form state
-  const [uploadTitle, setUploadTitle] = useState("");
-  const [uploadDescription, setUploadDescription] = useState("");
-  const [uploadTags, setUploadTags] = useState("");
-  const [uploadPrivacy, setUploadPrivacy] = useState<"private" | "unlisted" | "public">("private");
-  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
 
   // Auth state
   const [clientId, setClientId] = useState("");
@@ -228,6 +381,7 @@ function Content() {
 
   // Conversion state
   const [converting, setConverting] = useState(false);
+  const [conversionProgress, setConversionProgress] = useState<ConversionProgress | null>(null);
 
   // Clip filters
   const [clipGameFilter, setClipGameFilter] = useState("all");
@@ -235,6 +389,10 @@ function Content() {
 
   // Exported video filters
   const [videoGameFilter, setVideoGameFilter] = useState("all");
+
+  // Sort
+  const [clipSort, setClipSort] = useState<"date" | "size">("date");
+  const [videoSort, setVideoSort] = useState<"date" | "size">("date");
 
   // ── Derived data ──────────────────────────────────────────────────────────
   const steamClips = useMemo(() => videos.filter((v) => v.is_steam_clip), [videos]);
@@ -246,33 +404,46 @@ function Content() {
     [steamClips]
   );
 
-  const uniqueVideoGameIds = useMemo(
+  const videoGroupKey = useCallback(
+    (v: VideoFile) => v.subfolder || v.game_id || "",
+    []
+  );
+
+  const uniqueVideoGroups = useMemo(
     () =>
       [
         "all",
         ...Array.from(
-          new Set(exportedVideos.map((v) => v.game_id ?? "").filter(Boolean))
+          new Set(exportedVideos.map(videoGroupKey).filter(Boolean))
         ).sort(),
       ],
-    [exportedVideos]
+    [exportedVideos, videoGroupKey]
   );
 
   const filteredClips = useMemo(
     () =>
-      steamClips.filter(
-        (c) =>
-          (clipGameFilter === "all" || c.game_id === clipGameFilter) &&
-          (clipTypeFilter === "all" || c.clip_type === clipTypeFilter)
-      ),
-    [steamClips, clipGameFilter, clipTypeFilter]
+      steamClips
+        .filter(
+          (c) =>
+            (clipGameFilter === "all" || c.game_id === clipGameFilter) &&
+            (clipTypeFilter === "all" || c.clip_type === clipTypeFilter)
+        )
+        .sort((a, b) =>
+          clipSort === "size" ? b.size - a.size : b.modified - a.modified
+        ),
+    [steamClips, clipGameFilter, clipTypeFilter, clipSort]
   );
 
   const filteredExportedVideos = useMemo(
     () =>
-      exportedVideos.filter(
-        (v) => videoGameFilter === "all" || v.game_id === videoGameFilter
-      ),
-    [exportedVideos, videoGameFilter]
+      exportedVideos
+        .filter(
+          (v) => videoGameFilter === "all" || videoGroupKey(v) === videoGameFilter
+        )
+        .sort((a, b) =>
+          videoSort === "size" ? b.size - a.size : b.modified - a.modified
+        ),
+    [exportedVideos, videoGameFilter, videoSort, videoGroupKey]
   );
 
   // ── Game name helper ──────────────────────────────────────────────────────
@@ -327,19 +498,17 @@ function Content() {
 
   // ── Event listeners ───────────────────────────────────────────────────────
   useEffect(() => {
-    const uploadListener = addEventListener<[UploadProgress]>(
-      "upload_progress",
-      (progress) => setUploadProgress(progress)
-    );
     const conversionListener = addEventListener<[ConversionProgress]>(
       "conversion_progress",
       (progress) => {
-        setConverting(progress.status === "started");
-        if (progress.status === "complete") refreshVideos();
+        setConversionProgress(progress);
+        setConverting(progress.status === "started" || progress.status === "converting");
+        if (progress.status === "complete") {
+          refreshVideos();
+        }
       }
     );
     return () => {
-      removeEventListener("upload_progress", uploadListener);
       removeEventListener("conversion_progress", conversionListener);
     };
   }, [refreshVideos]);
@@ -404,8 +573,8 @@ function Content() {
     toaster.toast({ title: "Disconnected", body: "YouTube account unlinked" });
   };
 
-  const handleToggleSubfolders = async () => {
-    const next = { ...pluginSettings, use_game_subfolders: !pluginSettings.use_game_subfolders };
+  const handleToggleSubfolders = async (checked: boolean) => {
+    const next = { ...pluginSettings, use_game_subfolders: checked };
     const result = await saveSettings(next);
     if (result.success) {
       setPluginSettings(next);
@@ -414,37 +583,26 @@ function Content() {
     }
   };
 
-  // ── Upload handlers ───────────────────────────────────────────────────────
+  // ── Upload handler ────────────────────────────────────────────────────────
   const handleSelectForUpload = (video: VideoFile) => {
-    setSelectedVideo(video);
-    setUploadTitle(video.name.replace(/\.[^/.]+$/, ""));
-    setUploadDescription("");
-    setUploadTags("");
-    setUploadPrivacy("private");
-    setUploadProgress(null);
-    setView("upload");
-  };
-
-  const handleUpload = async () => {
-    if (!selectedVideo) return;
-    const result = await uploadToYoutube(
-      selectedVideo.path,
-      uploadTitle || selectedVideo.name,
-      uploadDescription,
-      uploadTags,
-      uploadPrivacy
+    showModal(
+      <UploadModal
+        closeModal={() => {/* filled by showModal */}}
+        video={video}
+        authenticated={isAuthenticated}
+      />
     );
-    if (!result.success) {
-      toaster.toast({ title: "Upload Error", body: result.error ?? "Failed to start upload" });
-    }
   };
 
   // ── Clip handlers ─────────────────────────────────────────────────────────
-  const handleExportClip = async (clip: VideoFile) => {
-    const result = await convertSteamClip(clip.path, clip.game_id ?? "");
-    if (!result.success) {
-      toaster.toast({ title: "Export Error", body: result.error ?? "Failed to start export" });
-    }
+  const handleExportClip = (clip: VideoFile) => {
+    showModal(
+      <ExportModal
+        closeModal={() => {/* filled by showModal */}}
+        clip={clip}
+        gameName={gameName(clip.game_id)}
+      />
+    );
   };
 
   const handleDeleteClip = async (clip: VideoFile) => {
@@ -459,7 +617,8 @@ function Content() {
 
   // ── Exported video handlers ───────────────────────────────────────────────
   const handleConvertVideo = async (video: VideoFile) => {
-    const result = await convertToMp4(video.path, video.game_id ?? "");
+    setConversionProgress(null);
+    const result = await convertToMp4(video.path, video.game_id ?? "", "", "medium");
     if (!result.success) {
       toaster.toast({
         title: "Conversion Error",
@@ -492,16 +651,14 @@ function Content() {
 
         <PanelSection title="Export Settings">
           <PanelSectionRow>
-            <ButtonItem layout="below" onClick={handleToggleSubfolders}>
-              Game Subfolders: {pluginSettings.use_game_subfolders ? "ON" : "OFF"}
-            </ButtonItem>
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <div style={{ fontSize: "11px", color: "#aaa" }}>
-              {pluginSettings.use_game_subfolders
+            <ToggleField
+              label="Game Subfolders"
+              description={pluginSettings.use_game_subfolders
                 ? "Videos saved to ~/Videos/<game name>/"
                 : "Videos saved to ~/Videos/"}
-            </div>
+              checked={pluginSettings.use_game_subfolders}
+              onChange={handleToggleSubfolders}
+            />
           </PanelSectionRow>
         </PanelSection>
 
@@ -594,114 +751,6 @@ function Content() {
     );
   }
 
-  // ── Upload form view ──────────────────────────────────────────────────────
-  if (view === "upload" && selectedVideo) {
-    const privacyOptions: Array<"private" | "unlisted" | "public"> = [
-      "private",
-      "unlisted",
-      "public",
-    ];
-    const privacyLabel: Record<string, string> = {
-      private: "Private",
-      unlisted: "Unlisted",
-      public: "Public",
-    };
-
-    const isUploading =
-      uploadProgress != null &&
-      (uploadProgress.status === "starting" || uploadProgress.status === "uploading");
-    const isComplete = uploadProgress?.status === "complete";
-    const hasError = uploadProgress?.status === "error";
-
-    return (
-      <>
-        <PanelSection>
-          <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => setView("videos")} disabled={isUploading}>
-              Back
-            </ButtonItem>
-          </PanelSectionRow>
-        </PanelSection>
-
-        <PanelSection title="Upload to YouTube">
-          <PanelSectionRow>
-            <div style={{ fontSize: "12px", color: "#ccc", wordBreak: "break-all" }}>
-              {selectedVideo.name} ({formatSize(selectedVideo.size)})
-            </div>
-          </PanelSectionRow>
-
-          {!isUploading && !isComplete && (
-            <>
-              <PanelSectionRow>
-                <TextField
-                  label="Title"
-                  value={uploadTitle}
-                  onChange={(e) => setUploadTitle(e.target.value)}
-                />
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <TextField
-                  label="Description"
-                  value={uploadDescription}
-                  onChange={(e) => setUploadDescription(e.target.value)}
-                />
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <TextField
-                  label="Tags (comma-separated)"
-                  value={uploadTags}
-                  onChange={(e) => setUploadTags(e.target.value)}
-                />
-              </PanelSectionRow>
-              <InlineSelect
-                label="Privacy"
-                value={uploadPrivacy}
-                options={privacyOptions.map((v) => ({ value: v, label: privacyLabel[v] }))}
-                onChange={(v) => setUploadPrivacy(v)}
-              />
-              <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  onClick={handleUpload}
-                  disabled={!isAuthenticated}
-                >
-                  {isAuthenticated ? "Upload to YouTube" : "Connect YouTube in Settings first"}
-                </ButtonItem>
-              </PanelSectionRow>
-              {hasError && (
-                <PanelSectionRow>
-                  <div style={{ fontSize: "12px", color: "#f44" }}>
-                    Error: {uploadProgress?.error}
-                  </div>
-                </PanelSectionRow>
-              )}
-            </>
-          )}
-
-          {isUploading && (
-            <PanelSectionRow>
-              <ProgressBarWithInfo
-                nProgress={uploadProgress?.progress ?? 0}
-                sOperationText={
-                  uploadProgress?.status === "starting" ? "Starting..." : "Uploading..."
-                }
-                sTimeRemaining={`${uploadProgress?.progress ?? 0}%`}
-              />
-            </PanelSectionRow>
-          )}
-
-          {isComplete && (
-            <PanelSectionRow>
-              <div style={{ fontSize: "12px", color: "#4CAF50", wordBreak: "break-all" }}>
-                Upload complete! {uploadProgress?.video_url}
-              </div>
-            </PanelSectionRow>
-          )}
-        </PanelSection>
-      </>
-    );
-  }
-
   // ── Steam Clips submenu ───────────────────────────────────────────────────
   if (view === "clips") {
     const typeLabel: Record<string, string> = {
@@ -715,34 +764,61 @@ function Content() {
       <>
         <PanelSection>
           <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => setView("list")}>
-              Back
-            </ButtonItem>
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
-              {loading ? "Scanning..." : "Refresh"}
-            </ButtonItem>
+            <Focusable style={{ display: "flex", gap: "8px" }}>
+              <DialogButton onClick={() => setView("list")} style={{ flex: 1, minWidth: 0 }}>
+                Back
+              </DialogButton>
+              <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {loading ? "..." : <FaSyncAlt />}
+              </DialogButton>
+            </Focusable>
           </PanelSectionRow>
         </PanelSection>
 
         <PanelSection title="Filters">
-          <InlineSelect
-            label="Game"
-            value={clipGameFilter}
-            options={uniqueClipGameIds.map((g) => ({
-              value: g,
-              label: g === "all" ? "All Games" : gameName(g),
-            }))}
-            onChange={(v) => setClipGameFilter(v)}
-          />
-          <InlineSelect
-            label="Type"
-            value={clipTypeFilter}
-            options={typeOptions.map((v) => ({ value: v, label: typeLabel[v] }))}
-            onChange={(v) => setClipTypeFilter(v)}
-          />
+          {uniqueClipGameIds.length > 2 && (
+            <InlineSelect
+              label="Game"
+              value={clipGameFilter}
+              options={uniqueClipGameIds.map((g) => ({
+                value: g,
+                label: g === "all" ? "All Games" : gameName(g),
+              }))}
+              onChange={(v) => setClipGameFilter(v)}
+            />
+          )}
+          {new Set(steamClips.map((c) => c.clip_type)).size > 1 && (
+            <InlineSelect
+              label="Type"
+              value={clipTypeFilter}
+              options={typeOptions.map((v) => ({ value: v, label: typeLabel[v] }))}
+              onChange={(v) => setClipTypeFilter(v)}
+            />
+          )}
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={() => setClipSort((s) => s === "date" ? "size" : "date")}
+            >
+              Sort: {clipSort === "date" ? "Date" : "File Size"}
+            </ButtonItem>
+          </PanelSectionRow>
         </PanelSection>
+
+        {converting && conversionProgress && (
+          <PanelSection title="Converting">
+            <PanelSectionRow>
+              <ProgressBarWithInfo
+                nProgress={conversionProgress.progress ?? 0}
+                sOperationText={
+                  conversionProgress.status === "complete" ? "Complete!" :
+                  conversionProgress.status === "error" ? "Error" : "Converting..."
+                }
+                sTimeRemaining={`${conversionProgress.progress ?? 0}%`}
+              />
+            </PanelSectionRow>
+          </PanelSection>
+        )}
 
         <PanelSection title={`Steam Clips (${filteredClips.length})`}>
           {filteredClips.length === 0 && !loading && (
@@ -765,28 +841,30 @@ function Content() {
                       fontWeight: "normal",
                     }}
                   >
-                    {clip.clip_type === "video" ? "Background" : "Manual Clip"}
+                    {clip.clip_type === "video" ? "Background" : "Clip"}
+                  </span>
+                  <span style={{ marginLeft: "8px", fontSize: "11px", color: "#aaa", fontWeight: "normal" }}>
+                    {formatSize(clip.size)} · {formatDate(clip.modified)}
                   </span>
                 </div>
               </PanelSectionRow>
               <PanelSectionRow>
-                <div style={{ fontSize: "11px", color: "#aaa" }}>
-                  {formatSize(clip.size)} · {formatDate(clip.modified)}
-                </div>
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  onClick={() => handleExportClip(clip)}
-                  disabled={converting}
-                >
-                  {converting ? "Converting..." : "Export to MP4"}
-                </ButtonItem>
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <ButtonItem layout="below" onClick={() => handleDeleteClip(clip)}>
-                  Delete Clip
-                </ButtonItem>
+                <Focusable style={{ display: "flex", gap: "8px" }}>
+                  <DialogButton
+                    onClick={() => handleExportClip(clip)}
+                    disabled={converting}
+                    style={{ flex: 1, minWidth: 0 }}
+                  >
+                    {converting ? "Converting..." : "Export to MP4"}
+                  </DialogButton>
+                  <DialogButton
+                    onClick={() => handleDeleteClip(clip)}
+                    disabled={converting}
+                    style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                  >
+                    <FaTrash />
+                  </DialogButton>
+                </Focusable>
               </PanelSectionRow>
             </PanelSection>
           ))}
@@ -801,30 +879,38 @@ function Content() {
       <>
         <PanelSection>
           <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => setView("list")}>
-              Back
-            </ButtonItem>
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
-              {loading ? "Scanning..." : "Refresh"}
-            </ButtonItem>
+            <Focusable style={{ display: "flex", gap: "8px" }}>
+              <DialogButton onClick={() => setView("list")} style={{ flex: 1, minWidth: 0 }}>
+                Back
+              </DialogButton>
+              <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {loading ? "..." : <FaSyncAlt />}
+              </DialogButton>
+            </Focusable>
           </PanelSectionRow>
         </PanelSection>
 
-        {uniqueVideoGameIds.length > 1 && (
-          <PanelSection title="Filter">
+        <PanelSection title="Filter">
+          {uniqueVideoGroups.length > 2 && (
             <InlineSelect
               label="Game"
               value={videoGameFilter}
-              options={uniqueVideoGameIds.map((g) => ({
+              options={uniqueVideoGroups.map((g) => ({
                 value: g,
-                label: g === "all" ? "All Games" : gameName(g),
+                label: g === "all" ? "All" : (/^\d+$/.test(g) ? gameName(g) : g),
               }))}
               onChange={(v) => setVideoGameFilter(v)}
             />
-          </PanelSection>
-        )}
+          )}
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={() => setVideoSort((s) => s === "date" ? "size" : "date")}
+            >
+              Sort: {videoSort === "date" ? "Date" : "File Size"}
+            </ButtonItem>
+          </PanelSectionRow>
+        </PanelSection>
 
         <PanelSection title={`Exported Videos (${filteredExportedVideos.length})`}>
           {filteredExportedVideos.length === 0 && !loading && (
@@ -834,16 +920,26 @@ function Content() {
               </div>
             </PanelSectionRow>
           )}
+          {converting && conversionProgress && view === "videos" && (
+            <PanelSectionRow>
+              <ProgressBarWithInfo
+                nProgress={conversionProgress.progress ?? 0}
+                sOperationText={
+                  conversionProgress.status === "complete" ? "Complete!" :
+                  conversionProgress.status === "error" ? "Error" : "Converting..."
+                }
+                sTimeRemaining={`${conversionProgress.progress ?? 0}%`}
+              />
+            </PanelSectionRow>
+          )}
           {filteredExportedVideos.map((video) => (
             <PanelSection key={video.path}>
               <PanelSectionRow>
                 <div style={{ fontSize: "12px", fontWeight: "bold", wordBreak: "break-all" }}>
                   {video.name}
                 </div>
-              </PanelSectionRow>
-              <PanelSectionRow>
                 <div style={{ fontSize: "11px", color: "#aaa" }}>
-                  {video.game_id ? `${gameName(video.game_id)} · ` : ""}
+                  {video.subfolder ? `${video.subfolder} · ` : video.game_id ? `${gameName(video.game_id)} · ` : ""}
                   {formatSize(video.size)} · {video.ext.toUpperCase()}
                 </div>
               </PanelSectionRow>
@@ -859,14 +955,20 @@ function Content() {
                 </PanelSectionRow>
               )}
               <PanelSectionRow>
-                <ButtonItem layout="below" onClick={() => handleSelectForUpload(video)}>
-                  Upload to YouTube
-                </ButtonItem>
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <ButtonItem layout="below" onClick={() => handleDeleteVideo(video)}>
-                  Delete
-                </ButtonItem>
+                <Focusable style={{ display: "flex", gap: "8px" }}>
+                  <DialogButton
+                    onClick={() => handleSelectForUpload(video)}
+                    style={{ flex: 1, minWidth: 0 }}
+                  >
+                    Upload
+                  </DialogButton>
+                  <DialogButton
+                    onClick={() => handleDeleteVideo(video)}
+                    style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                  >
+                    <FaTrash />
+                  </DialogButton>
+                </Focusable>
               </PanelSectionRow>
             </PanelSection>
           ))}
@@ -881,8 +983,20 @@ function Content() {
       <PanelSection>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => setView("settings")}>
-            Settings {isAuthenticated ? "(YouTube connected)" : "(YouTube not connected)"}
+            Settings
           </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: "12px", color: isAuthenticated ? "#8bc34a" : "#aaa", textAlign: "center" }}>
+            {isAuthenticated ? "YouTube connected" : "YouTube not connected"}
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: "11px", color: "#888", textAlign: "center", lineHeight: "1.6" }}>
+            {steamClips.length} clip{steamClips.length !== 1 ? "s" : ""} ({formatSize(steamClips.reduce((sum, c) => sum + c.size, 0))})
+            {" · "}
+            {exportedVideos.length} video{exportedVideos.length !== 1 ? "s" : ""} ({formatSize(exportedVideos.reduce((sum, v) => sum + v.size, 0))})
+          </div>
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => setView("clips")}>
@@ -896,7 +1010,7 @@ function Content() {
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
-            {loading ? "Scanning..." : "Refresh"}
+            {loading ? "Scanning..." : <span style={{ display: "inline-flex", alignItems: "center" }}><FaSyncAlt style={{ marginRight: "8px" }} /> Refresh</span>}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
@@ -910,15 +1024,28 @@ function Content() {
 export default definePlugin(() => {
   console.log("Video Uploader plugin initializing");
 
+  let lastUploadMilestone = 0;
   const uploadListener = addEventListener<[UploadProgress]>(
     "upload_progress",
     (progress) => {
-      if (progress.status === "complete") {
+      if (progress.status === "uploading" && progress.progress != null) {
+        // Show toast at 25% milestones
+        const milestone = Math.floor(progress.progress / 25) * 25;
+        if (milestone > 0 && milestone > lastUploadMilestone) {
+          lastUploadMilestone = milestone;
+          toaster.toast({
+            title: "Uploading...",
+            body: `Upload progress: ${milestone}%`,
+          });
+        }
+      } else if (progress.status === "complete") {
+        lastUploadMilestone = 0;
         toaster.toast({
           title: "Upload Complete!",
           body: `Video uploaded: ${progress.video_url}`,
         });
       } else if (progress.status === "error") {
+        lastUploadMilestone = 0;
         toaster.toast({
           title: "Upload Failed",
           body: progress.error ?? "Unknown error",
@@ -927,15 +1054,27 @@ export default definePlugin(() => {
     }
   );
 
+  let lastConversionMilestone = 0;
   const conversionListener = addEventListener<[ConversionProgress]>(
     "conversion_progress",
     (progress) => {
-      if (progress.status === "complete") {
+      if (progress.status === "converting" && progress.progress != null) {
+        const milestone = Math.floor(progress.progress / 25) * 25;
+        if (milestone > 0 && milestone > lastConversionMilestone) {
+          lastConversionMilestone = milestone;
+          toaster.toast({
+            title: "Converting...",
+            body: `Conversion progress: ${milestone}%`,
+          });
+        }
+      } else if (progress.status === "complete") {
+        lastConversionMilestone = 0;
         toaster.toast({
           title: "Conversion Complete",
           body: `Saved to: ${progress.output_path}`,
         });
       } else if (progress.status === "error") {
+        lastConversionMilestone = 0;
         toaster.toast({
           title: "Conversion Failed",
           body: progress.error ?? "Unknown error",

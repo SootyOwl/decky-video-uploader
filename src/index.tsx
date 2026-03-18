@@ -1011,7 +1011,7 @@ function Content() {
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
-            {loading ? "Scanning..." : <><FaSyncAlt style={{ marginRight: "8px" }} /> Refresh</>}
+            {loading ? "Scanning..." : <span style={{ display: "inline-flex", alignItems: "center" }}><FaSyncAlt style={{ marginRight: "8px" }} /> Refresh</span>}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>

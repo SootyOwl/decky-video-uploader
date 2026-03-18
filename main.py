@@ -229,9 +229,9 @@ class Plugin:
         return "unknown"
 
     def _steam_userdata_bases(self) -> list:
-        """Return all candidate Steam userdata directory bases."""
+        """Return all candidate Steam userdata directory bases (deduplicated)."""
         user_home = decky.DECKY_USER_HOME
-        return [
+        candidates = [
             os.path.join(user_home, ".local", "share", "Steam", "userdata"),
             os.path.join(user_home, ".steam", "steam", "userdata"),
             # Flatpak install
@@ -241,6 +241,14 @@ class Plugin:
                 "data", "Steam", "userdata",
             ),
         ]
+        seen: set = set()
+        result: list = []
+        for p in candidates:
+            real = os.path.realpath(p)
+            if real not in seen:
+                seen.add(real)
+                result.append(p)
+        return result
 
     def _discover_steam_clips(self) -> list:
         """Return clip-folder entries for Steam's internal MPEG-DASH game recordings.

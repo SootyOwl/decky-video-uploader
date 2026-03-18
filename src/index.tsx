@@ -124,11 +124,9 @@ interface ConversionProgress {
 type View = "list" | "clips" | "videos" | "settings";
 
 const QUALITY_OPTIONS = [
-  { value: "copy", label: "Original (fast)", description: "No re-encoding" },
-  { value: "low", label: "Low", description: "CRF 28 — smallest file" },
-  { value: "medium", label: "Medium", description: "CRF 22 — balanced" },
-  { value: "high", label: "High", description: "CRF 18 — high quality" },
-  { value: "ultra", label: "Ultra", description: "CRF 14 — near-lossless" },
+  { value: "copy", label: "Original", description: "Fast — no re-encoding" },
+  { value: "high", label: "Smaller file", description: "Good quality, ~40% smaller" },
+  { value: "medium", label: "Smallest file", description: "Decent quality, ~60% smaller" },
 ] as const;
 
 // ---------------------------------------------------------------------------

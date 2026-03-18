@@ -392,10 +392,8 @@ class Plugin:
 
     # Quality presets: name → (crf, preset)
     QUALITY_PRESETS: dict = {
-        "low":    ("28", "faster"),
         "medium": ("22", "fast"),
         "high":   ("18", "medium"),
-        "ultra":  ("14", "slow"),
     }
 
     async def convert_to_mp4(self, source_path: str, game_id: str = "", output_name: str = "", quality: str = "medium") -> dict:

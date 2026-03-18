@@ -784,15 +784,14 @@ function Content() {
             options={typeOptions.map((v) => ({ value: v, label: typeLabel[v] }))}
             onChange={(v) => setClipTypeFilter(v)}
           />
-          <InlineSelect
-            label="Sort"
-            value={clipSort}
-            options={[
-              { value: "date" as const, label: "Date" },
-              { value: "size" as const, label: "File Size" },
-            ]}
-            onChange={(v) => setClipSort(v)}
-          />
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={() => setClipSort((s) => s === "date" ? "size" : "date")}
+            >
+              Sort: {clipSort === "date" ? "Date" : "File Size"}
+            </ButtonItem>
+          </PanelSectionRow>
         </PanelSection>
 
         {converting && conversionProgress && (
@@ -892,15 +891,14 @@ function Content() {
               onChange={(v) => setVideoGameFilter(v)}
             />
           )}
-          <InlineSelect
-            label="Sort"
-            value={videoSort}
-            options={[
-              { value: "date" as const, label: "Date" },
-              { value: "size" as const, label: "File Size" },
-            ]}
-            onChange={(v) => setVideoSort(v)}
-          />
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={() => setVideoSort((s) => s === "date" ? "size" : "date")}
+            >
+              Sort: {videoSort === "date" ? "Date" : "File Size"}
+            </ButtonItem>
+          </PanelSectionRow>
         </PanelSection>
 
         <PanelSection title={`Exported Videos (${filteredExportedVideos.length})`}>

@@ -21,6 +21,13 @@ YOUTUBE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 
+# Default OAuth2 credentials (TV & Limited Input device client).
+# Replace these with your own values from the Google Cloud Console.
+# For device-flow clients the secret is not truly confidential — Google
+# documents that it may be embedded in distributed applications.
+DEFAULT_CLIENT_ID = "267858990226-t964tp8m6oina39elk8obk2fq0h8sdar.apps.googleusercontent.com"
+DEFAULT_CLIENT_SECRET = "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"
+
 # Supported video file extensions
 VIDEO_EXTENSIONS = frozenset([".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".ts"])
 
@@ -669,21 +676,27 @@ class Plugin:
     # YouTube OAuth2 – device-code flow
     # ------------------------------------------------------------------
 
-    async def start_auth(self, client_id: str, client_secret: str) -> dict:
+    async def start_auth(self, client_id: str = "", client_secret: str = "") -> dict:
         """Initiate the YouTube OAuth2 device-code flow.
+
+        *client_id* and *client_secret* are optional — when empty the
+        built-in default credentials are used so that end-users don't
+        need their own Google Cloud project.
 
         Returns the *user_code* and *verification_url* that the user must visit.
         """
         try:
+            cid = client_id or DEFAULT_CLIENT_ID
+            csecret = client_secret or DEFAULT_CLIENT_SECRET
             body = urllib.parse.urlencode(
-                {"client_id": client_id, "scope": YOUTUBE_SCOPE}
+                {"client_id": cid, "scope": YOUTUBE_SCOPE}
             ).encode()
             req = urllib.request.Request(YOUTUBE_DEVICE_CODE_URL, data=body, method="POST")
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read())
             self._auth_state = {
-                "client_id": client_id,
-                "client_secret": client_secret,
+                "client_id": cid,
+                "client_secret": csecret,
                 "device_code": data["device_code"],
                 "interval": data.get("interval", 5),
                 "expires_in": data.get("expires_in", 1800),

@@ -221,6 +221,7 @@ function Content() {
   // Auth state
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
+  const [useCustomCredentials, setUseCustomCredentials] = useState(false);
   const [authCode, setAuthCode] = useState("");
   const [authUrl, setAuthUrl] = useState("");
   const [authPolling, setAuthPolling] = useState(false);
@@ -315,7 +316,10 @@ function Content() {
     refreshVideos();
     refreshAuthStatus();
     getCredentials().then((creds) => {
-      if (creds.client_id) setClientId(creds.client_id);
+      if (creds.client_id) {
+        setClientId(creds.client_id);
+        setUseCustomCredentials(true);
+      }
       if (creds.client_secret) setClientSecret(creds.client_secret);
     });
     getSettings().then((s) => setPluginSettings(s));
@@ -374,14 +378,17 @@ function Content() {
   };
 
   const handleConnectYoutube = async () => {
-    if (!clientId || !clientSecret) {
+    if (useCustomCredentials && (!clientId || !clientSecret)) {
       toaster.toast({
         title: "Error",
         body: "Please enter your Client ID and Client Secret first",
       });
       return;
     }
-    const result = await startAuth(clientId, clientSecret);
+    // Pass custom credentials or empty strings to use built-in defaults
+    const cid = useCustomCredentials ? clientId : "";
+    const csecret = useCustomCredentials ? clientSecret : "";
+    const result = await startAuth(cid, csecret);
     if (result.success) {
       setAuthCode(result.user_code ?? "");
       setAuthUrl(result.verification_url ?? "");
@@ -507,27 +514,6 @@ function Content() {
             </PanelSectionRow>
           ) : (
             <>
-              <PanelSectionRow>
-                <TextField
-                  label="Client ID"
-                  description="From Google Cloud Console -> OAuth 2.0 Client IDs"
-                  value={clientId}
-                  onChange={(e) => setClientId(e.target.value)}
-                />
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <TextField
-                  label="Client Secret"
-                  value={clientSecret}
-                  onChange={(e) => setClientSecret(e.target.value)}
-                  bIsPassword
-                />
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <ButtonItem layout="below" onClick={handleSaveCredentials}>
-                  Save Credentials
-                </ButtonItem>
-              </PanelSectionRow>
               {authCode ? (
                 <>
                   <PanelSectionRow>
@@ -560,6 +546,46 @@ function Content() {
                     Connect YouTube Account
                   </ButtonItem>
                 </PanelSectionRow>
+              )}
+
+              <PanelSectionRow>
+                <ButtonItem
+                  layout="below"
+                  onClick={() => setUseCustomCredentials(!useCustomCredentials)}
+                >
+                  {useCustomCredentials ? "Use Default Credentials" : "Use Custom Credentials (Advanced)"}
+                </ButtonItem>
+              </PanelSectionRow>
+
+              {useCustomCredentials && (
+                <>
+                  <PanelSectionRow>
+                    <div style={{ fontSize: "11px", color: "#aaa" }}>
+                      Provide your own Google Cloud OAuth2 client credentials.
+                    </div>
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <TextField
+                      label="Client ID"
+                      description="From Google Cloud Console -> OAuth 2.0 Client IDs"
+                      value={clientId}
+                      onChange={(e) => setClientId(e.target.value)}
+                    />
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <TextField
+                      label="Client Secret"
+                      value={clientSecret}
+                      onChange={(e) => setClientSecret(e.target.value)}
+                      bIsPassword
+                    />
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <ButtonItem layout="below" onClick={handleSaveCredentials}>
+                      Save Credentials
+                    </ButtonItem>
+                  </PanelSectionRow>
+                </>
               )}
             </>
           )}

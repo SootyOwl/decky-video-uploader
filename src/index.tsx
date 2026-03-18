@@ -2,6 +2,7 @@ import {
   ButtonItem,
   ConfirmModal,
   DialogBody,
+  DialogButton,
   DropdownItem,
   Focusable,
   PanelSection,
@@ -764,14 +765,14 @@ function Content() {
       <>
         <PanelSection>
           <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => setView("list")}>
-              Back
-            </ButtonItem>
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
-              {loading ? "Scanning..." : "Refresh"}
-            </ButtonItem>
+            <Focusable style={{ display: "flex", gap: "8px" }}>
+              <DialogButton onClick={() => setView("list")} style={{ flex: 1, minWidth: 0 }}>
+                Back
+              </DialogButton>
+              <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px" }}>
+                {loading ? "..." : "⟳"}
+              </DialogButton>
+            </Focusable>
           </PanelSectionRow>
         </PanelSection>
 
@@ -879,14 +880,14 @@ function Content() {
       <>
         <PanelSection>
           <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => setView("list")}>
-              Back
-            </ButtonItem>
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
-              {loading ? "Scanning..." : "Refresh"}
-            </ButtonItem>
+            <Focusable style={{ display: "flex", gap: "8px" }}>
+              <DialogButton onClick={() => setView("list")} style={{ flex: 1, minWidth: 0 }}>
+                Back
+              </DialogButton>
+              <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px" }}>
+                {loading ? "..." : "⟳"}
+              </DialogButton>
+            </Focusable>
           </PanelSectionRow>
         </PanelSection>
 
@@ -1011,7 +1012,7 @@ function Content() {
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
-            {loading ? "Scanning..." : "Refresh"}
+            {loading ? "Scanning..." : "⟳ Refresh"}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>

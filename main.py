@@ -126,6 +126,12 @@ class Plugin:
         steamapps_dirs = [
             os.path.join(user_home, ".local", "share", "Steam", "steamapps"),
             os.path.join(user_home, ".steam", "steam", "steamapps"),
+            # Flatpak install
+            os.path.join(
+                user_home,
+                ".var", "app", "com.valvesoftware.Steam",
+                "data", "Steam", "steamapps",
+            ),
         ]
         for steamapps_dir in steamapps_dirs:
             if not os.path.isdir(steamapps_dir):
@@ -172,6 +178,20 @@ class Plugin:
             return parts[0]
         return "unknown"
 
+    def _steam_userdata_bases(self) -> list:
+        """Return all candidate Steam userdata directory bases."""
+        user_home = decky.DECKY_USER_HOME
+        return [
+            os.path.join(user_home, ".local", "share", "Steam", "userdata"),
+            os.path.join(user_home, ".steam", "steam", "userdata"),
+            # Flatpak install
+            os.path.join(
+                user_home,
+                ".var", "app", "com.valvesoftware.Steam",
+                "data", "Steam", "userdata",
+            ),
+        ]
+
     def _discover_steam_clips(self) -> list:
         """Return clip-folder entries for Steam's internal MPEG-DASH game recordings.
 
@@ -181,10 +201,7 @@ class Plugin:
         user_home = decky.DECKY_USER_HOME
         clips: list = []
 
-        for steam_base in [
-            os.path.join(user_home, ".local", "share", "Steam", "userdata"),
-            os.path.join(user_home, ".steam", "steam", "userdata"),
-        ]:
+        for steam_base in self._steam_userdata_bases():
             if not os.path.isdir(steam_base):
                 continue
             try:
@@ -208,13 +225,12 @@ class Plugin:
                                     if not clip_entry.is_dir():
                                         continue
                                     clip_folder = clip_entry.path
-                                    # A valid Steam recording has session.mpd at depth 0 or 1
-                                    has_mpd = os.path.isfile(
-                                        os.path.join(clip_folder, "session.mpd")
-                                    ) or any(
-                                        os.path.isfile(os.path.join(clip_folder, d, "session.mpd"))
-                                        for d in os.listdir(clip_folder)
-                                        if os.path.isdir(os.path.join(clip_folder, d))
+                                    # Recursively search for session.mpd (matches
+                                    # SteamClip's approach -- manual clips may nest
+                                    # session data at varying depths).
+                                    has_mpd = any(
+                                        "session.mpd" in files
+                                        for _root, _dirs, files in os.walk(clip_folder)
                                     )
                                     if not has_mpd:
                                         continue
@@ -255,10 +271,7 @@ class Plugin:
         user_home = decky.DECKY_USER_HOME
         search_roots: list = [os.path.join(user_home, "Videos")]
 
-        for steam_base in [
-            os.path.join(user_home, ".local", "share", "Steam", "userdata"),
-            os.path.join(user_home, ".steam", "steam", "userdata"),
-        ]:
+        for steam_base in self._steam_userdata_bases():
             if not os.path.isdir(steam_base):
                 continue
             try:
@@ -426,8 +439,7 @@ class Plugin:
 
         user_home = decky.DECKY_USER_HOME
         allowed_bases = [
-            os.path.normpath(os.path.join(user_home, ".local", "share", "Steam", "userdata")),
-            os.path.normpath(os.path.join(user_home, ".steam", "steam", "userdata")),
+            os.path.normpath(b) for b in self._steam_userdata_bases()
         ]
         if not any(safe_path.startswith(base + os.sep) for base in allowed_bases):
             return {"success": False, "error": "Path is not inside a known Steam userdata directory"}

@@ -1000,15 +1000,27 @@ export default definePlugin(() => {
     }
   );
 
+  let lastConversionMilestone = 0;
   const conversionListener = addEventListener<[ConversionProgress]>(
     "conversion_progress",
     (progress) => {
-      if (progress.status === "complete") {
+      if (progress.status === "converting" && progress.progress != null) {
+        const milestone = Math.floor(progress.progress / 25) * 25;
+        if (milestone > 0 && milestone > lastConversionMilestone) {
+          lastConversionMilestone = milestone;
+          toaster.toast({
+            title: "Converting...",
+            body: `Conversion progress: ${milestone}%`,
+          });
+        }
+      } else if (progress.status === "complete") {
+        lastConversionMilestone = 0;
         toaster.toast({
           title: "Conversion Complete",
           body: `Saved to: ${progress.output_path}`,
         });
       } else if (progress.status === "error") {
+        lastConversionMilestone = 0;
         toaster.toast({
           title: "Conversion Failed",
           body: progress.error ?? "Unknown error",

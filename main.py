@@ -1,5 +1,6 @@
 import os
 import glob
+import shutil
 import tempfile
 import asyncio
 import json
@@ -35,7 +36,7 @@ class Plugin:
         self._auth_state: dict = {}
         self._loop = asyncio.get_event_loop()
         decky.logger.info("Video Uploader plugin loaded")
-        os.makedirs(self._converted_dir(), exist_ok=True)
+        self._videos_dir()  # ensure ~/Videos/ exists
 
     async def _unload(self):
         decky.logger.info("Video Uploader plugin unloaded")
@@ -50,8 +51,11 @@ class Plugin:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _converted_dir(self) -> str:
-        return os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "converted")
+    def _videos_dir(self) -> str:
+        """Output directory for exported / converted videos."""
+        path = os.path.join(decky.DECKY_USER_HOME, "Videos")
+        os.makedirs(path, exist_ok=True)
+        return path
 
     def _creds_path(self) -> str:
         return os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "client_credentials.json")
@@ -80,6 +84,20 @@ class Plugin:
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _parse_clip_game_id(folder_name: str) -> str:
+        """Extract the Steam App ID from a recording folder name (best-effort).
+
+        Steam recording folder names follow the pattern:
+        ``{prefix}_{appid}_{YYYYMMDD}_{HHMMSS}``
+        """
+        parts = folder_name.split("_")
+        if len(parts) >= 2 and parts[1].isdigit():
+            return parts[1]
+        if parts[0].isdigit():
+            return parts[0]
+        return "unknown"
 
     def _discover_steam_clips(self) -> list:
         """Return clip-folder entries for Steam's internal MPEG-DASH game recordings.
@@ -137,15 +155,18 @@ class Plugin:
                                         mtime = clip_entry.stat().st_mtime
                                     except OSError:
                                         mtime = 0.0
+                                    clip_name = os.path.basename(clip_folder)
                                     clips.append(
                                         {
                                             "path": clip_folder,
-                                            "name": os.path.basename(clip_folder),
+                                            "name": clip_name,
                                             "size": total_size,
                                             "modified": mtime,
                                             "ext": "steam_clip",
                                             "needs_conversion": True,
                                             "is_steam_clip": True,
+                                            "game_id": Plugin._parse_clip_game_id(clip_name),
+                                            "clip_type": subdir,
                                         }
                                     )
                             except PermissionError:
@@ -227,12 +248,12 @@ class Plugin:
         return {"success": True, "started": True}
 
     async def _run_conversion(self, source_path: str) -> None:
-        os.makedirs(self._converted_dir(), exist_ok=True)
+        out_dir = self._videos_dir()
         base = os.path.splitext(os.path.basename(source_path))[0]
-        output_path = os.path.join(self._converted_dir(), f"{base}.mp4")
+        output_path = os.path.join(out_dir, f"{base}.mp4")
         counter = 1
         while os.path.exists(output_path):
-            output_path = os.path.join(self._converted_dir(), f"{base}_{counter}.mp4")
+            output_path = os.path.join(out_dir, f"{base}_{counter}.mp4")
             counter += 1
 
         await decky.emit("conversion_progress", {"status": "started", "source": source_path})
@@ -297,6 +318,34 @@ class Plugin:
         asyncio.get_event_loop().create_task(self._run_steam_clip_conversion(clip_folder))
         return {"success": True, "started": True}
 
+    async def delete_steam_clip(self, clip_folder: str) -> dict:
+        """Delete a Steam game recording clip folder.
+
+        Safety checks:
+        - The normalised path must be a directory.
+        - It must sit inside a known Steam userdata/gamerecordings tree so that
+          a malicious path like ``/tmp/gamerecordings/../important`` is rejected.
+        """
+        safe_path = os.path.normpath(clip_folder)
+        if not os.path.isdir(safe_path):
+            return {"success": False, "error": "Clip folder not found"}
+
+        user_home = decky.DECKY_USER_HOME
+        allowed_bases = [
+            os.path.normpath(os.path.join(user_home, ".local", "share", "Steam", "userdata")),
+            os.path.normpath(os.path.join(user_home, ".steam", "steam", "userdata")),
+        ]
+        if not any(safe_path.startswith(base + os.sep) for base in allowed_bases):
+            return {"success": False, "error": "Path is not inside a known Steam userdata directory"}
+        if "gamerecordings" not in safe_path:
+            return {"success": False, "error": "Path does not look like a Steam recording"}
+
+        try:
+            shutil.rmtree(safe_path)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
     async def _ffmpeg_concat(self, file_list: list, is_video: bool) -> str:
         """Concatenate multiple MP4 segments with ffmpeg; returns path to output file."""
         list_tmp = tempfile.NamedTemporaryFile(
@@ -335,12 +384,12 @@ class Plugin:
         return out_path
 
     async def _run_steam_clip_conversion(self, clip_folder: str) -> None:
-        os.makedirs(self._converted_dir(), exist_ok=True)
+        out_dir = self._videos_dir()
         clip_name = os.path.basename(clip_folder)
-        output_path = os.path.join(self._converted_dir(), f"{clip_name}.mp4")
+        output_path = os.path.join(out_dir, f"{clip_name}.mp4")
         counter = 1
         while os.path.exists(output_path):
-            output_path = os.path.join(self._converted_dir(), f"{clip_name}_{counter}.mp4")
+            output_path = os.path.join(out_dir, f"{clip_name}_{counter}.mp4")
             counter += 1
 
         await decky.emit("conversion_progress", {"status": "started", "source": clip_folder})

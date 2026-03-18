@@ -14,7 +14,7 @@ import {
   definePlugin,
   toaster,
 } from "@decky/api";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { FaYoutube } from "react-icons/fa";
 
 // ---------------------------------------------------------------------------
@@ -23,6 +23,7 @@ import { FaYoutube } from "react-icons/fa";
 const getVideoFiles = callable<[], VideoFile[]>("get_video_files");
 const convertToMp4 = callable<[source_path: string], CallResult>("convert_to_mp4");
 const convertSteamClip = callable<[clip_folder: string], CallResult>("convert_steam_clip");
+const deleteClip = callable<[clip_folder: string], CallResult>("delete_steam_clip");
 const saveCredentials = callable<[client_id: string, client_secret: string], CallResult>(
   "save_credentials"
 );
@@ -55,6 +56,8 @@ interface VideoFile {
   ext: string;
   needs_conversion: boolean;
   is_steam_clip: boolean;
+  game_id?: string;
+  clip_type?: string;
 }
 
 interface CallResult {
@@ -103,7 +106,7 @@ interface ConversionProgress {
   error?: string;
 }
 
-type View = "list" | "settings" | "upload";
+type View = "list" | "clips" | "settings" | "upload";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -113,6 +116,10 @@ function formatSize(bytes: number): string {
   if (bytes < 1_048_576) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1_073_741_824) return `${(bytes / 1_048_576).toFixed(1)} MB`;
   return `${(bytes / 1_073_741_824).toFixed(2)} GB`;
+}
+
+function formatDate(ts: number): string {
+  return new Date(ts * 1000).toLocaleDateString();
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +148,29 @@ function Content() {
 
   // Conversion
   const [converting, setConverting] = useState(false);
+
+  // Clip filters
+  const [clipGameFilter, setClipGameFilter] = useState("all");
+  const [clipTypeFilter, setClipTypeFilter] = useState("all");
+
+  // ── Derived data ──────────────────────────────────────────────────────────
+  const steamClips = useMemo(() => videos.filter((v) => v.is_steam_clip), [videos]);
+  const exportedVideos = useMemo(() => videos.filter((v) => !v.is_steam_clip), [videos]);
+
+  const uniqueGameIds = useMemo(
+    () => [...new Set(steamClips.map((c) => c.game_id ?? "unknown"))].sort(),
+    [steamClips]
+  );
+
+  const filteredClips = useMemo(
+    () =>
+      steamClips.filter(
+        (c) =>
+          (clipGameFilter === "all" || c.game_id === clipGameFilter) &&
+          (clipTypeFilter === "all" || c.clip_type === clipTypeFilter)
+      ),
+    [steamClips, clipGameFilter, clipTypeFilter]
+  );
 
   // ── Loaders ──────────────────────────────────────────────────────────────
   const refreshVideos = useCallback(async () => {
@@ -274,6 +304,25 @@ function Content() {
     );
     if (!result.success) {
       toaster.toast({ title: "Upload Error", body: result.error ?? "Failed to start upload" });
+    }
+  };
+
+  // ── Delete clip handler ───────────────────────────────────────────────────
+  const handleDeleteClip = async (clip: VideoFile) => {
+    const result = await deleteClip(clip.path);
+    if (result.success) {
+      refreshVideos();
+      toaster.toast({ title: "Deleted", body: `Clip "${clip.name}" deleted` });
+    } else {
+      toaster.toast({ title: "Error", body: result.error ?? "Failed to delete clip" });
+    }
+  };
+
+  // ── Export Steam clip handler ─────────────────────────────────────────────
+  const handleExportClip = async (clip: VideoFile) => {
+    const result = await convertSteamClip(clip.path);
+    if (!result.success) {
+      toaster.toast({ title: "Export Error", body: result.error ?? "Failed to start export" });
     }
   };
 
@@ -472,6 +521,106 @@ function Content() {
     );
   }
 
+  // ── Steam Clips submenu ───────────────────────────────────────────────────
+  if (view === "clips") {
+    return (
+      <>
+        <PanelSection>
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={() => setView("list")}>
+              ← Back to Videos
+            </ButtonItem>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
+              {loading ? "Scanning…" : "↺ Refresh"}
+            </ButtonItem>
+          </PanelSectionRow>
+        </PanelSection>
+
+        <PanelSection title="Filters">
+          <PanelSectionRow>
+            <DropdownItem
+              label="Game"
+              rgOptions={[
+                { data: "all", label: "All Games" },
+                ...uniqueGameIds.map((g) => ({ data: g, label: `App ${g}` })),
+              ]}
+              selectedOption={clipGameFilter}
+              onChange={(opt) => setClipGameFilter(opt.data)}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <DropdownItem
+              label="Type"
+              rgOptions={[
+                { data: "all", label: "All Types" },
+                { data: "clips", label: "Manual Clips" },
+                { data: "video", label: "Background Recordings" },
+              ]}
+              selectedOption={clipTypeFilter}
+              onChange={(opt) => setClipTypeFilter(opt.data)}
+            />
+          </PanelSectionRow>
+        </PanelSection>
+
+        <PanelSection title={`Steam Clips (${filteredClips.length})`}>
+          {filteredClips.length === 0 && !loading && (
+            <PanelSectionRow>
+              <div style={{ fontSize: "12px", color: "#aaa" }}>
+                No clips found. Steam records clips in
+                ~/.local/share/Steam/userdata/[id]/gamerecordings/clips or video.
+              </div>
+            </PanelSectionRow>
+          )}
+          {filteredClips.map((clip) => (
+            <PanelSection key={clip.path}>
+              <PanelSectionRow>
+                <div style={{ fontSize: "12px", fontWeight: "bold" }}>
+                  App {clip.game_id ?? "Unknown"}
+                  <span
+                    style={{
+                      marginLeft: "8px",
+                      fontSize: "11px",
+                      color: clip.clip_type === "video" ? "#aaa" : "#4fc3f7",
+                      fontWeight: "normal",
+                    }}
+                  >
+                    {clip.clip_type === "video" ? "Background" : "Manual Clip"}
+                  </span>
+                </div>
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <div style={{ fontSize: "11px", color: "#aaa" }}>
+                  {formatSize(clip.size)} · {formatDate(clip.modified)}
+                </div>
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <div style={{ fontSize: "10px", color: "#666", wordBreak: "break-all" }}>
+                  {clip.name}
+                </div>
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <ButtonItem
+                  layout="below"
+                  onClick={() => handleExportClip(clip)}
+                  disabled={converting}
+                >
+                  {converting ? "Converting…" : "Export to MP4 (~/Videos/)"}
+                </ButtonItem>
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={() => handleDeleteClip(clip)}>
+                  🗑 Delete Clip
+                </ButtonItem>
+              </PanelSectionRow>
+            </PanelSection>
+          ))}
+        </PanelSection>
+      </>
+    );
+  }
+
   // ── Video list view (default) ─────────────────────────────────────────────
   return (
     <>
@@ -482,23 +631,28 @@ function Content() {
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => setView("clips")}>
+            🎮 Steam Clips ({steamClips.length})
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
           <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
             {loading ? "Scanning…" : "↺ Refresh Videos"}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title={`Videos (${videos.length})`}>
-        {videos.length === 0 && !loading && (
+      <PanelSection title={`Exported Videos (${exportedVideos.length})`}>
+        {exportedVideos.length === 0 && !loading && (
           <PanelSectionRow>
             <div style={{ fontSize: "12px", color: "#aaa" }}>
-              No video files found. Exported recordings are in ~/Videos or
-              ~/.local/share/Steam/userdata/[id]/760/remote. Unexported Steam game
-              clips live in gamerecordings/clips or gamerecordings/video.
+              No exported videos found. Use 🎮 Steam Clips to export recordings to
+              ~/Videos/, or check ~/Videos or
+              ~/.local/share/Steam/userdata/[id]/760/remote.
             </div>
           </PanelSectionRow>
         )}
-        {videos.map((video) => (
+        {exportedVideos.map((video) => (
           <PanelSection key={video.path}>
             <PanelSectionRow>
               <div
@@ -509,39 +663,30 @@ function Content() {
                   marginBottom: "2px",
                 }}
               >
-                {video.is_steam_clip && (
-                  <span style={{ color: "#4fc3f7", marginRight: "4px" }}>🎮</span>
-                )}
                 {video.name}
               </div>
             </PanelSectionRow>
             <PanelSectionRow>
               <div style={{ fontSize: "11px", color: "#aaa" }}>
-                {formatSize(video.size)} · {video.is_steam_clip ? "Steam Clip (not exported)" : video.ext.toUpperCase()}
+                {formatSize(video.size)} · {video.ext.toUpperCase()}
               </div>
             </PanelSectionRow>
             {video.needs_conversion && (
               <PanelSectionRow>
                 <ButtonItem
                   layout="below"
-                  onClick={() =>
-                    video.is_steam_clip
-                      ? convertSteamClip(video.path)
-                      : convertToMp4(video.path)
-                  }
+                  onClick={() => convertToMp4(video.path)}
                   disabled={converting}
                 >
                   {converting ? "Converting…" : "Convert to MP4"}
                 </ButtonItem>
               </PanelSectionRow>
             )}
-            {!video.is_steam_clip && (
-              <PanelSectionRow>
-                <ButtonItem layout="below" onClick={() => handleSelectForUpload(video)}>
-                  Upload to YouTube
-                </ButtonItem>
-              </PanelSectionRow>
-            )}
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={() => handleSelectForUpload(video)}>
+                Upload to YouTube
+              </ButtonItem>
+            </PanelSectionRow>
           </PanelSection>
         ))}
       </PanelSection>

@@ -26,10 +26,10 @@ const getVideoFiles = callable<[], VideoFile[]>("get_video_files");
 const getGameNames = callable<[], Record<string, string>>("get_game_names");
 const getSettings = callable<[], PluginSettings>("get_settings");
 const saveSettings = callable<[settings: PluginSettings], CallResult>("save_settings");
-const convertToMp4 = callable<[source_path: string, game_id: string, output_name: string], CallResult>(
+const convertToMp4 = callable<[source_path: string, game_id: string, output_name: string, quality: string], CallResult>(
   "convert_to_mp4"
 );
-const convertSteamClip = callable<[clip_folder: string, game_id: string, output_name: string], CallResult>(
+const convertSteamClip = callable<[clip_folder: string, game_id: string, output_name: string, quality: string], CallResult>(
   "convert_steam_clip"
 );
 const deleteSteamClip = callable<[clip_folder: string], CallResult>("delete_steam_clip");
@@ -122,6 +122,14 @@ interface ConversionProgress {
 }
 
 type View = "list" | "clips" | "videos" | "settings";
+
+const QUALITY_OPTIONS = [
+  { value: "copy", label: "Original (fast)", description: "No re-encoding" },
+  { value: "low", label: "Low", description: "CRF 28 — smallest file" },
+  { value: "medium", label: "Medium", description: "CRF 22 — balanced" },
+  { value: "high", label: "High", description: "CRF 18 — high quality" },
+  { value: "ultra", label: "Ultra", description: "CRF 14 — near-lossless" },
+] as const;
 
 // ---------------------------------------------------------------------------
 // UploadModal — full-screen modal for YouTube upload form.
@@ -232,6 +240,7 @@ function ExportModal({
 }) {
   const defaultName = `${gName} - ${clip.clip_type === "video" ? "Recording" : "Clip"} ${formatDateTime(clip.modified)}`;
   const [name, setName] = useState(defaultName);
+  const [quality, setQuality] = useState("copy");
 
   return (
     <ConfirmModal
@@ -239,7 +248,7 @@ function ExportModal({
       strOKButtonText="Export"
       strCancelButtonText="Cancel"
       onOK={() => {
-        convertSteamClip(clip.path, clip.game_id ?? "", name).then((result) => {
+        convertSteamClip(clip.path, clip.game_id ?? "", name, quality).then((result) => {
           if (result.success) {
             toaster.toast({ title: "Export Started", body: `Exporting "${name}"...` });
           } else {
@@ -261,6 +270,33 @@ function ExportModal({
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
+        <div style={{ marginTop: "12px", fontSize: "12px", color: "#ccc", marginBottom: "8px" }}>
+          Quality
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+          {QUALITY_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => setQuality(opt.value)}
+              style={{
+                padding: "8px 12px",
+                border: "none",
+                borderRadius: "4px",
+                background: quality === opt.value ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.05)",
+                color: quality === opt.value ? "#fff" : "#aaa",
+                fontWeight: quality === opt.value ? "bold" : "normal",
+                cursor: "pointer",
+                textAlign: "left",
+                fontSize: "13px",
+              }}
+            >
+              {opt.label}
+              <span style={{ marginLeft: "8px", fontSize: "11px", color: "#777" }}>
+                {opt.description}
+              </span>
+            </button>
+          ))}
+        </div>
       </DialogBody>
     </ConfirmModal>
   );
@@ -593,7 +629,7 @@ function Content() {
   // ── Exported video handlers ───────────────────────────────────────────────
   const handleConvertVideo = async (video: VideoFile) => {
     setConversionProgress(null);
-    const result = await convertToMp4(video.path, video.game_id ?? "", "");
+    const result = await convertToMp4(video.path, video.game_id ?? "", "", "medium");
     if (!result.success) {
       toaster.toast({
         title: "Conversion Error",

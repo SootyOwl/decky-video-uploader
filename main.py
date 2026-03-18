@@ -390,7 +390,15 @@ class Plugin:
     # MP4 conversion (runs as a background asyncio task)
     # ------------------------------------------------------------------
 
-    async def convert_to_mp4(self, source_path: str, game_id: str = "", output_name: str = "") -> dict:
+    # Quality presets: name → (crf, preset)
+    QUALITY_PRESETS: dict = {
+        "low":    ("28", "faster"),
+        "medium": ("22", "fast"),
+        "high":   ("18", "medium"),
+        "ultra":  ("14", "slow"),
+    }
+
+    async def convert_to_mp4(self, source_path: str, game_id: str = "", output_name: str = "", quality: str = "medium") -> dict:
         """Convert a video to H.264/AAC MP4 using ffmpeg.
 
         Returns immediately; emits *conversion_progress* events when done.
@@ -402,7 +410,8 @@ class Plugin:
         if game_id and game_id.isdigit():
             names = await self.get_game_names()
             game_name = names.get(game_id, game_id)
-        asyncio.get_event_loop().create_task(self._run_conversion(source_path, game_name, output_name))
+        crf, preset = self.QUALITY_PRESETS.get(quality, self.QUALITY_PRESETS["medium"])
+        asyncio.get_event_loop().create_task(self._run_conversion(source_path, game_name, output_name, crf, preset))
         return {"success": True, "started": True}
 
     @staticmethod
@@ -424,7 +433,7 @@ class Plugin:
             pass
         return 0.0
 
-    async def _run_conversion(self, source_path: str, game_name: str = "", output_name: str = "") -> None:
+    async def _run_conversion(self, source_path: str, game_name: str = "", output_name: str = "", crf: str = "22", preset: str = "fast") -> None:
         out_dir = self._videos_dir(game_name)
         base = output_name.strip() if output_name.strip() else os.path.splitext(os.path.basename(source_path))[0]
         # Sanitise user-provided name
@@ -447,9 +456,9 @@ class Plugin:
                 "-c:v",
                 "libx264",
                 "-preset",
-                "fast",
+                preset,
                 "-crf",
-                "22",
+                crf,
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -515,10 +524,11 @@ class Plugin:
     # Steam clip conversion (m4s MPEG-DASH → MP4)
     # ------------------------------------------------------------------
 
-    async def convert_steam_clip(self, clip_folder: str, game_id: str = "", output_name: str = "") -> dict:
+    async def convert_steam_clip(self, clip_folder: str, game_id: str = "", output_name: str = "", quality: str = "copy") -> dict:
         """Convert a Steam internal MPEG-DASH game recording to MP4.
 
         *clip_folder* must be a directory containing a ``session.mpd`` file.
+        *quality* can be "copy" (fast remux) or a preset name for re-encoding.
         Returns immediately; emits *conversion_progress* events when done.
         """
         if not os.path.isdir(clip_folder):
@@ -529,7 +539,7 @@ class Plugin:
             names = await self.get_game_names()
             game_name = names.get(game_id, game_id)
         asyncio.get_event_loop().create_task(
-            self._run_steam_clip_conversion(clip_folder, game_name, output_name)
+            self._run_steam_clip_conversion(clip_folder, game_name, output_name, quality)
         )
         return {"success": True, "started": True}
 
@@ -625,7 +635,7 @@ class Plugin:
                 pass
         return out_path
 
-    async def _run_steam_clip_conversion(self, clip_folder: str, game_name: str = "", output_name: str = "") -> None:
+    async def _run_steam_clip_conversion(self, clip_folder: str, game_name: str = "", output_name: str = "", quality: str = "copy") -> None:
         out_dir = self._videos_dir(game_name)
         base = output_name.strip() if output_name.strip() else os.path.basename(clip_folder)
         base = re.sub(r'[<>:"/\\|?*]', "_", base).strip(" .")[:128].strip(" .")
@@ -710,11 +720,20 @@ class Plugin:
 
             # Merge video + audio streams into the output mp4
             duration = await self._get_duration(final_video)
+            if quality == "copy" or quality not in self.QUALITY_PRESETS:
+                merge_args = ["-c", "copy"]
+            else:
+                crf, preset = self.QUALITY_PRESETS[quality]
+                merge_args = [
+                    "-c:v", "libx264", "-preset", preset, "-crf", crf,
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-movflags", "+faststart",
+                ]
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-y",
                 "-i", final_video,
                 "-i", final_audio,
-                "-c", "copy",
+                *merge_args,
                 "-progress", "pipe:1",
                 output_path,
                 stdout=asyncio.subprocess.PIPE,

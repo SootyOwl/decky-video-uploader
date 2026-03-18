@@ -134,6 +134,28 @@ const QUALITY_OPTIONS = [
   { value: "medium", label: "Smallest file", description: "Re-encode, ~60% smaller" },
 ] as const;
 
+const PRIVACY_OPTIONS = [
+  { data: "private" as const, label: "Private" },
+  { data: "unlisted" as const, label: "Unlisted" },
+  { data: "public" as const, label: "Public" },
+];
+
+const CLIP_TYPE_LABELS: Record<string, string> = {
+  all: "All Types",
+  clips: "Manual Clips",
+  video: "Background Recordings",
+};
+const CLIP_TYPE_OPTIONS: Array<"all" | "clips" | "video"> = ["all", "clips", "video"];
+
+const ICON_BUTTON_STYLE = {
+  minWidth: 0,
+  width: "auto",
+  padding: "0 12px",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+} as const;
+
 // ---------------------------------------------------------------------------
 // UploadModal — full-screen modal for YouTube upload form.
 //
@@ -154,12 +176,6 @@ function UploadModal({
   const [description, setDescription] = useState("");
   const [tags, setTags] = useState("");
   const [privacy, setPrivacy] = useState<"private" | "unlisted" | "public">("private");
-
-  const privacyOptions = [
-    { data: "private" as const, label: "Private" },
-    { data: "unlisted" as const, label: "Unlisted" },
-    { data: "public" as const, label: "Public" },
-  ];
 
   return (
     <ConfirmModal
@@ -206,7 +222,7 @@ function UploadModal({
         />
         <DropdownItem
           label="Privacy"
-          rgOptions={privacyOptions}
+          rgOptions={PRIVACY_OPTIONS}
           selectedOption={privacy}
           onChange={(opt) => setPrivacy(opt.data)}
         />
@@ -380,8 +396,8 @@ function Content() {
   const [authPolling, setAuthPolling] = useState(false);
 
   // Conversion state
-  const [converting, setConverting] = useState(false);
   const [conversionProgress, setConversionProgress] = useState<ConversionProgress | null>(null);
+  const converting = conversionProgress?.status === "started" || conversionProgress?.status === "converting";
 
   // Clip filters
   const [clipGameFilter, setClipGameFilter] = useState("all");
@@ -403,6 +419,14 @@ function Content() {
       ["all", ...Array.from(new Set(steamClips.map((c) => c.game_id ?? "unknown"))).sort()],
     [steamClips]
   );
+
+  const hasMultipleClipTypes = useMemo(
+    () => new Set(steamClips.map((c) => c.clip_type)).size > 1,
+    [steamClips]
+  );
+
+  const totalClipSize = useMemo(() => steamClips.reduce((sum, c) => sum + c.size, 0), [steamClips]);
+  const totalVideoSize = useMemo(() => exportedVideos.reduce((sum, v) => sum + v.size, 0), [exportedVideos]);
 
   const videoGroupKey = useCallback(
     (v: VideoFile) => v.subfolder || v.game_id || "",
@@ -458,18 +482,17 @@ function Content() {
   // ── Loaders ──────────────────────────────────────────────────────────────
   const refreshVideos = useCallback(async () => {
     setLoading(true);
-    try {
-      const files = await getVideoFiles();
-      setVideos(files);
-    } catch {
+    const [filesResult, namesResult] = await Promise.allSettled([
+      getVideoFiles(),
+      getGameNames(),
+    ]);
+    if (filesResult.status === "fulfilled") {
+      setVideos(filesResult.value);
+    } else {
       toaster.toast({ title: "Error", body: "Failed to load video files" });
     }
-    // Game names are best-effort; don't block video list on failure
-    try {
-      const names = await getGameNames();
-      setGameNames(names);
-    } catch {
-      // silently ignore — numeric App IDs will be shown as fallback
+    if (namesResult.status === "fulfilled") {
+      setGameNames(namesResult.value);
     }
     setLoading(false);
   }, []);
@@ -502,7 +525,6 @@ function Content() {
       "conversion_progress",
       (progress) => {
         setConversionProgress(progress);
-        setConverting(progress.status === "started" || progress.status === "converting");
         if (progress.status === "complete") {
           refreshVideos();
         }
@@ -517,16 +539,21 @@ function Content() {
   useEffect(() => {
     if (!authPolling) return;
     const interval = setInterval(async () => {
-      const result = await pollAuth();
-      if (result.authenticated) {
+      try {
+        const result = await pollAuth();
+        if (result.authenticated) {
+          setAuthPolling(false);
+          setAuthCode("");
+          setAuthUrl("");
+          setIsAuthenticated(true);
+          toaster.toast({ title: "Connected!", body: "YouTube account linked successfully" });
+        } else if (!result.pending) {
+          setAuthPolling(false);
+          toaster.toast({ title: "Auth Failed", body: result.error ?? "Authorization failed" });
+        }
+      } catch {
         setAuthPolling(false);
-        setAuthCode("");
-        setAuthUrl("");
-        setIsAuthenticated(true);
-        toaster.toast({ title: "Connected!", body: "YouTube account linked successfully" });
-      } else if (!result.pending) {
-        setAuthPolling(false);
-        toaster.toast({ title: "Auth Failed", body: result.error ?? "Authorization failed" });
+        toaster.toast({ title: "Auth Error", body: "Lost connection to backend" });
       }
     }, 5000);
     return () => clearInterval(interval);
@@ -753,13 +780,6 @@ function Content() {
 
   // ── Steam Clips submenu ───────────────────────────────────────────────────
   if (view === "clips") {
-    const typeLabel: Record<string, string> = {
-      all: "All Types",
-      clips: "Manual Clips",
-      video: "Background Recordings",
-    };
-    const typeOptions: Array<"all" | "clips" | "video"> = ["all", "clips", "video"];
-
     return (
       <>
         <PanelSection>
@@ -768,7 +788,7 @@ function Content() {
               <DialogButton onClick={() => setView("list")} style={{ flex: 1, minWidth: 0 }}>
                 Back
               </DialogButton>
-              <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <DialogButton onClick={refreshVideos} disabled={loading} style={ICON_BUTTON_STYLE}>
                 {loading ? "..." : <FaSyncAlt />}
               </DialogButton>
             </Focusable>
@@ -787,11 +807,11 @@ function Content() {
               onChange={(v) => setClipGameFilter(v)}
             />
           )}
-          {new Set(steamClips.map((c) => c.clip_type)).size > 1 && (
+          {hasMultipleClipTypes && (
             <InlineSelect
               label="Type"
               value={clipTypeFilter}
-              options={typeOptions.map((v) => ({ value: v, label: typeLabel[v] }))}
+              options={CLIP_TYPE_OPTIONS.map((v) => ({ value: v, label: CLIP_TYPE_LABELS[v] }))}
               onChange={(v) => setClipTypeFilter(v)}
             />
           )}
@@ -860,7 +880,7 @@ function Content() {
                   <DialogButton
                     onClick={() => handleDeleteClip(clip)}
                     disabled={converting}
-                    style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                    style={ICON_BUTTON_STYLE}
                   >
                     <FaTrash />
                   </DialogButton>
@@ -883,7 +903,7 @@ function Content() {
               <DialogButton onClick={() => setView("list")} style={{ flex: 1, minWidth: 0 }}>
                 Back
               </DialogButton>
-              <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <DialogButton onClick={refreshVideos} disabled={loading} style={ICON_BUTTON_STYLE}>
                 {loading ? "..." : <FaSyncAlt />}
               </DialogButton>
             </Focusable>
@@ -920,7 +940,7 @@ function Content() {
               </div>
             </PanelSectionRow>
           )}
-          {converting && conversionProgress && view === "videos" && (
+          {converting && conversionProgress && (
             <PanelSectionRow>
               <ProgressBarWithInfo
                 nProgress={conversionProgress.progress ?? 0}
@@ -964,7 +984,7 @@ function Content() {
                   </DialogButton>
                   <DialogButton
                     onClick={() => handleDeleteVideo(video)}
-                    style={{ minWidth: 0, width: "auto", padding: "0 12px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                    style={ICON_BUTTON_STYLE}
                   >
                     <FaTrash />
                   </DialogButton>
@@ -993,9 +1013,9 @@ function Content() {
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ fontSize: "11px", color: "#888", textAlign: "center", lineHeight: "1.6" }}>
-            {steamClips.length} clip{steamClips.length !== 1 ? "s" : ""} ({formatSize(steamClips.reduce((sum, c) => sum + c.size, 0))})
+            {steamClips.length} clip{steamClips.length !== 1 ? "s" : ""} ({formatSize(totalClipSize)})
             {" · "}
-            {exportedVideos.length} video{exportedVideos.length !== 1 ? "s" : ""} ({formatSize(exportedVideos.reduce((sum, v) => sum + v.size, 0))})
+            {exportedVideos.length} video{exportedVideos.length !== 1 ? "s" : ""} ({formatSize(totalVideoSize)})
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
@@ -1024,63 +1044,48 @@ function Content() {
 export default definePlugin(() => {
   console.log("Video Uploader plugin initializing");
 
-  let lastUploadMilestone = 0;
+  function milestoneToaster<T extends { status: string; progress?: number; error?: string }>(config: {
+    activeStatus: string;
+    activeTitle: string;
+    completeTitle: string;
+    completeBody: (p: T) => string;
+  }) {
+    let lastMilestone = 0;
+    return (progress: T) => {
+      if (progress.status === config.activeStatus && progress.progress != null) {
+        const milestone = Math.floor(progress.progress / 25) * 25;
+        if (milestone > 0 && milestone > lastMilestone) {
+          lastMilestone = milestone;
+          toaster.toast({ title: config.activeTitle, body: `Progress: ${milestone}%` });
+        }
+      } else if (progress.status === "complete") {
+        lastMilestone = 0;
+        toaster.toast({ title: config.completeTitle, body: config.completeBody(progress) });
+      } else if (progress.status === "error") {
+        lastMilestone = 0;
+        toaster.toast({ title: `${config.completeTitle.split(" ")[0]} Failed`, body: progress.error ?? "Unknown error" });
+      }
+    };
+  }
+
   const uploadListener = addEventListener<[UploadProgress]>(
     "upload_progress",
-    (progress) => {
-      if (progress.status === "uploading" && progress.progress != null) {
-        // Show toast at 25% milestones
-        const milestone = Math.floor(progress.progress / 25) * 25;
-        if (milestone > 0 && milestone > lastUploadMilestone) {
-          lastUploadMilestone = milestone;
-          toaster.toast({
-            title: "Uploading...",
-            body: `Upload progress: ${milestone}%`,
-          });
-        }
-      } else if (progress.status === "complete") {
-        lastUploadMilestone = 0;
-        toaster.toast({
-          title: "Upload Complete!",
-          body: `Video uploaded: ${progress.video_url}`,
-        });
-      } else if (progress.status === "error") {
-        lastUploadMilestone = 0;
-        toaster.toast({
-          title: "Upload Failed",
-          body: progress.error ?? "Unknown error",
-        });
-      }
-    }
+    milestoneToaster<UploadProgress>({
+      activeStatus: "uploading",
+      activeTitle: "Uploading...",
+      completeTitle: "Upload Complete!",
+      completeBody: (p) => `Video uploaded: ${p.video_url}`,
+    })
   );
 
-  let lastConversionMilestone = 0;
   const conversionListener = addEventListener<[ConversionProgress]>(
     "conversion_progress",
-    (progress) => {
-      if (progress.status === "converting" && progress.progress != null) {
-        const milestone = Math.floor(progress.progress / 25) * 25;
-        if (milestone > 0 && milestone > lastConversionMilestone) {
-          lastConversionMilestone = milestone;
-          toaster.toast({
-            title: "Converting...",
-            body: `Conversion progress: ${milestone}%`,
-          });
-        }
-      } else if (progress.status === "complete") {
-        lastConversionMilestone = 0;
-        toaster.toast({
-          title: "Conversion Complete",
-          body: `Saved to: ${progress.output_path}`,
-        });
-      } else if (progress.status === "error") {
-        lastConversionMilestone = 0;
-        toaster.toast({
-          title: "Conversion Failed",
-          body: progress.error ?? "Unknown error",
-        });
-      }
-    }
+    milestoneToaster<ConversionProgress>({
+      activeStatus: "converting",
+      activeTitle: "Converting...",
+      completeTitle: "Conversion Complete",
+      completeBody: (p) => `Saved to: ${p.output_path}`,
+    })
   );
 
   return {

@@ -125,8 +125,8 @@ type View = "list" | "clips" | "videos" | "settings";
 
 const QUALITY_OPTIONS = [
   { value: "copy", label: "Original", description: "Fast — no re-encoding" },
-  { value: "high", label: "Smaller file", description: "Good quality, ~40% smaller" },
-  { value: "medium", label: "Smallest file", description: "Decent quality, ~60% smaller" },
+  { value: "high", label: "Smaller file", description: "Re-encode, ~40% smaller" },
+  { value: "medium", label: "Smallest file", description: "Re-encode, ~60% smaller" },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -268,8 +268,11 @@ function ExportModal({
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <div style={{ marginTop: "12px", fontSize: "12px", color: "#ccc", marginBottom: "8px" }}>
+        <div style={{ marginTop: "12px", fontSize: "12px", color: "#ccc", marginBottom: "4px" }}>
           Quality
+        </div>
+        <div style={{ fontSize: "10px", color: "#777", marginBottom: "8px" }}>
+          Original quality is set in Steam &gt; Settings &gt; Game Recording
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
           {QUALITY_OPTIONS.map((opt) => (

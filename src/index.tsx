@@ -10,6 +10,7 @@ import {
   ProgressBarWithInfo,
   showModal,
   TextField,
+  ToggleField,
   staticClasses,
 } from "@decky/ui";
 import {
@@ -572,8 +573,8 @@ function Content() {
     toaster.toast({ title: "Disconnected", body: "YouTube account unlinked" });
   };
 
-  const handleToggleSubfolders = async () => {
-    const next = { ...pluginSettings, use_game_subfolders: !pluginSettings.use_game_subfolders };
+  const handleToggleSubfolders = async (checked: boolean) => {
+    const next = { ...pluginSettings, use_game_subfolders: checked };
     const result = await saveSettings(next);
     if (result.success) {
       setPluginSettings(next);
@@ -650,16 +651,14 @@ function Content() {
 
         <PanelSection title="Export Settings">
           <PanelSectionRow>
-            <ButtonItem layout="below" onClick={handleToggleSubfolders}>
-              Game Subfolders: {pluginSettings.use_game_subfolders ? "ON" : "OFF"}
-            </ButtonItem>
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <div style={{ fontSize: "11px", color: "#aaa" }}>
-              {pluginSettings.use_game_subfolders
+            <ToggleField
+              label="Game Subfolders"
+              description={pluginSettings.use_game_subfolders
                 ? "Videos saved to ~/Videos/<game name>/"
                 : "Videos saved to ~/Videos/"}
-            </div>
+              checked={pluginSettings.use_game_subfolders}
+              onChange={handleToggleSubfolders}
+            />
           </PanelSectionRow>
         </PanelSection>
 

@@ -390,7 +390,7 @@ class Plugin:
     # MP4 conversion (runs as a background asyncio task)
     # ------------------------------------------------------------------
 
-    async def convert_to_mp4(self, source_path: str, game_id: str = "") -> dict:
+    async def convert_to_mp4(self, source_path: str, game_id: str = "", output_name: str = "") -> dict:
         """Convert a video to H.264/AAC MP4 using ffmpeg.
 
         Returns immediately; emits *conversion_progress* events when done.
@@ -402,19 +402,42 @@ class Plugin:
         if game_id and game_id.isdigit():
             names = await self.get_game_names()
             game_name = names.get(game_id, game_id)
-        asyncio.get_event_loop().create_task(self._run_conversion(source_path, game_name))
+        asyncio.get_event_loop().create_task(self._run_conversion(source_path, game_name, output_name))
         return {"success": True, "started": True}
 
-    async def _run_conversion(self, source_path: str, game_name: str = "") -> None:
+    @staticmethod
+    async def _get_duration(source_path: str) -> float:
+        """Get duration in seconds using ffprobe.  Returns 0 on failure."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffprobe", "-v", "quiet",
+                "-print_format", "json",
+                "-show_format", source_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                info = json.loads(stdout)
+                return float(info.get("format", {}).get("duration", 0))
+        except Exception:
+            pass
+        return 0.0
+
+    async def _run_conversion(self, source_path: str, game_name: str = "", output_name: str = "") -> None:
         out_dir = self._videos_dir(game_name)
-        base = os.path.splitext(os.path.basename(source_path))[0]
+        base = output_name.strip() if output_name.strip() else os.path.splitext(os.path.basename(source_path))[0]
+        # Sanitise user-provided name
+        base = re.sub(r'[<>:"/\\|?*]', "_", base).strip(" .")[:128].strip(" .")
         output_path = os.path.join(out_dir, f"{base}.mp4")
         counter = 1
         while os.path.exists(output_path):
             output_path = os.path.join(out_dir, f"{base}_{counter}.mp4")
             counter += 1
 
-        await decky.emit("conversion_progress", {"status": "started", "source": source_path})
+        duration = await self._get_duration(source_path)
+
+        await decky.emit("conversion_progress", {"status": "started", "source": source_path, "progress": 0})
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg",
@@ -433,11 +456,14 @@ class Plugin:
                 "128k",
                 "-movflags",
                 "+faststart",
+                "-progress", "pipe:1",
                 output_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _stdout, stderr = await proc.communicate()
+            # Parse progress from stdout (machine-readable key=value lines)
+            await self._read_ffmpeg_progress(proc, duration)
+            await proc.wait()
             if proc.returncode == 0:
                 await decky.emit(
                     "conversion_progress",
@@ -445,10 +471,12 @@ class Plugin:
                         "status": "complete",
                         "output_path": output_path,
                         "size": os.path.getsize(output_path),
+                        "progress": 100,
                     },
                 )
             else:
-                err = stderr.decode("utf-8", errors="replace")[-500:]
+                stderr_data = await proc.stderr.read()
+                err = stderr_data.decode("utf-8", errors="replace")[-500:]
                 await decky.emit(
                     "conversion_progress",
                     {"status": "error", "error": f"ffmpeg error: {err}"},
@@ -461,11 +489,33 @@ class Plugin:
         except Exception as exc:
             await decky.emit("conversion_progress", {"status": "error", "error": str(exc)})
 
+    async def _read_ffmpeg_progress(self, proc: asyncio.subprocess.Process, duration: float) -> None:
+        """Read ffmpeg -progress pipe:1 output and emit progress events."""
+        last_pct = -1
+        assert proc.stdout is not None
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            decoded = line.decode("utf-8", errors="replace").strip()
+            if decoded.startswith("out_time_us=") and duration > 0:
+                try:
+                    us = int(decoded.split("=", 1)[1])
+                    pct = min(int((us / 1_000_000) / duration * 100), 99)
+                    if pct > last_pct:
+                        last_pct = pct
+                        await decky.emit(
+                            "conversion_progress",
+                            {"status": "converting", "progress": pct},
+                        )
+                except (ValueError, ZeroDivisionError):
+                    pass
+
     # ------------------------------------------------------------------
     # Steam clip conversion (m4s MPEG-DASH → MP4)
     # ------------------------------------------------------------------
 
-    async def convert_steam_clip(self, clip_folder: str, game_id: str = "") -> dict:
+    async def convert_steam_clip(self, clip_folder: str, game_id: str = "", output_name: str = "") -> dict:
         """Convert a Steam internal MPEG-DASH game recording to MP4.
 
         *clip_folder* must be a directory containing a ``session.mpd`` file.
@@ -479,7 +529,7 @@ class Plugin:
             names = await self.get_game_names()
             game_name = names.get(game_id, game_id)
         asyncio.get_event_loop().create_task(
-            self._run_steam_clip_conversion(clip_folder, game_name)
+            self._run_steam_clip_conversion(clip_folder, game_name, output_name)
         )
         return {"success": True, "started": True}
 
@@ -575,16 +625,17 @@ class Plugin:
                 pass
         return out_path
 
-    async def _run_steam_clip_conversion(self, clip_folder: str, game_name: str = "") -> None:
+    async def _run_steam_clip_conversion(self, clip_folder: str, game_name: str = "", output_name: str = "") -> None:
         out_dir = self._videos_dir(game_name)
-        clip_name = os.path.basename(clip_folder)
-        output_path = os.path.join(out_dir, f"{clip_name}.mp4")
+        base = output_name.strip() if output_name.strip() else os.path.basename(clip_folder)
+        base = re.sub(r'[<>:"/\\|?*]', "_", base).strip(" .")[:128].strip(" .")
+        output_path = os.path.join(out_dir, f"{base}.mp4")
         counter = 1
         while os.path.exists(output_path):
-            output_path = os.path.join(out_dir, f"{clip_name}_{counter}.mp4")
+            output_path = os.path.join(out_dir, f"{base}_{counter}.mp4")
             counter += 1
 
-        await decky.emit("conversion_progress", {"status": "started", "source": clip_folder})
+        await decky.emit("conversion_progress", {"status": "started", "source": clip_folder, "progress": 0})
         temp_files: list = []
         try:
             # Find all session directories (one per recording segment)
@@ -658,16 +709,19 @@ class Plugin:
                 final_audio = temp_audios[0]
 
             # Merge video + audio streams into the output mp4
+            duration = await self._get_duration(final_video)
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-y",
                 "-i", final_video,
                 "-i", final_audio,
                 "-c", "copy",
+                "-progress", "pipe:1",
                 output_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _stdout, stderr = await proc.communicate()
+            await self._read_ffmpeg_progress(proc, duration)
+            await proc.wait()
             if proc.returncode == 0:
                 await decky.emit(
                     "conversion_progress",
@@ -675,10 +729,12 @@ class Plugin:
                         "status": "complete",
                         "output_path": output_path,
                         "size": os.path.getsize(output_path),
+                        "progress": 100,
                     },
                 )
             else:
-                err = stderr.decode("utf-8", errors="replace")[-500:]
+                stderr_data = await proc.stderr.read()
+                err = stderr_data.decode("utf-8", errors="replace")[-500:]
                 await decky.emit(
                     "conversion_progress",
                     {"status": "error", "error": f"ffmpeg error: {err}"},

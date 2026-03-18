@@ -23,10 +23,10 @@ const getVideoFiles = callable<[], VideoFile[]>("get_video_files");
 const getGameNames = callable<[], Record<string, string>>("get_game_names");
 const getSettings = callable<[], PluginSettings>("get_settings");
 const saveSettings = callable<[settings: PluginSettings], CallResult>("save_settings");
-const convertToMp4 = callable<[source_path: string, game_id: string], CallResult>(
+const convertToMp4 = callable<[source_path: string, game_id: string, output_name: string], CallResult>(
   "convert_to_mp4"
 );
-const convertSteamClip = callable<[clip_folder: string, game_id: string], CallResult>(
+const convertSteamClip = callable<[clip_folder: string, game_id: string, output_name: string], CallResult>(
   "convert_steam_clip"
 );
 const deleteSteamClip = callable<[clip_folder: string], CallResult>("delete_steam_clip");
@@ -111,7 +111,8 @@ interface UploadProgress {
 }
 
 interface ConversionProgress {
-  status: "started" | "complete" | "error";
+  status: "started" | "converting" | "complete" | "error";
+  progress?: number;
   output_path?: string;
   size?: number;
   error?: string;
@@ -217,6 +218,7 @@ function Content() {
   const [uploadTags, setUploadTags] = useState("");
   const [uploadPrivacy, setUploadPrivacy] = useState<"private" | "unlisted" | "public">("private");
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const [uploadStep, setUploadStep] = useState<"title" | "description" | "tags" | "review">("title");
 
   // Auth state
   const [clientId, setClientId] = useState("");
@@ -228,6 +230,9 @@ function Content() {
 
   // Conversion state
   const [converting, setConverting] = useState(false);
+  const [conversionProgress, setConversionProgress] = useState<ConversionProgress | null>(null);
+  const [exportClip, setExportClip] = useState<VideoFile | null>(null);
+  const [exportName, setExportName] = useState("");
 
   // Clip filters
   const [clipGameFilter, setClipGameFilter] = useState("all");
@@ -334,8 +339,12 @@ function Content() {
     const conversionListener = addEventListener<[ConversionProgress]>(
       "conversion_progress",
       (progress) => {
-        setConverting(progress.status === "started");
-        if (progress.status === "complete") refreshVideos();
+        setConversionProgress(progress);
+        setConverting(progress.status === "started" || progress.status === "converting");
+        if (progress.status === "complete") {
+          refreshVideos();
+          setExportClip(null);
+        }
       }
     );
     return () => {
@@ -422,6 +431,7 @@ function Content() {
     setUploadTags("");
     setUploadPrivacy("private");
     setUploadProgress(null);
+    setUploadStep("title");
     setView("upload");
   };
 
@@ -440,8 +450,15 @@ function Content() {
   };
 
   // ── Clip handlers ─────────────────────────────────────────────────────────
-  const handleExportClip = async (clip: VideoFile) => {
-    const result = await convertSteamClip(clip.path, clip.game_id ?? "");
+  const handlePrepareExport = (clip: VideoFile) => {
+    setExportClip(clip);
+    setExportName(gameName(clip.game_id) + " - " + (clip.clip_type === "video" ? "Recording" : "Clip"));
+    setConversionProgress(null);
+  };
+
+  const handleExportClip = async () => {
+    if (!exportClip) return;
+    const result = await convertSteamClip(exportClip.path, exportClip.game_id ?? "", exportName);
     if (!result.success) {
       toaster.toast({ title: "Export Error", body: result.error ?? "Failed to start export" });
     }
@@ -459,7 +476,8 @@ function Content() {
 
   // ── Exported video handlers ───────────────────────────────────────────────
   const handleConvertVideo = async (video: VideoFile) => {
-    const result = await convertToMp4(video.path, video.game_id ?? "");
+    setConversionProgress(null);
+    const result = await convertToMp4(video.path, video.game_id ?? "", "");
     if (!result.success) {
       toaster.toast({
         title: "Conversion Error",
@@ -632,42 +650,95 @@ function Content() {
 
           {!isUploading && !isComplete && (
             <>
-              <PanelSectionRow>
-                <TextField
-                  label="Title"
-                  value={uploadTitle}
-                  onChange={(e) => setUploadTitle(e.target.value)}
-                />
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <TextField
-                  label="Description"
-                  value={uploadDescription}
-                  onChange={(e) => setUploadDescription(e.target.value)}
-                />
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <TextField
-                  label="Tags (comma-separated)"
-                  value={uploadTags}
-                  onChange={(e) => setUploadTags(e.target.value)}
-                />
-              </PanelSectionRow>
-              <InlineSelect
-                label="Privacy"
-                value={uploadPrivacy}
-                options={privacyOptions.map((v) => ({ value: v, label: privacyLabel[v] }))}
-                onChange={(v) => setUploadPrivacy(v)}
-              />
-              <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  onClick={handleUpload}
-                  disabled={!isAuthenticated}
-                >
-                  {isAuthenticated ? "Upload to YouTube" : "Connect YouTube in Settings first"}
-                </ButtonItem>
-              </PanelSectionRow>
+              {uploadStep === "title" && (
+                <>
+                  <PanelSectionRow>
+                    <TextField
+                      label="Title"
+                      value={uploadTitle}
+                      onChange={(e) => setUploadTitle(e.target.value)}
+                    />
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <ButtonItem layout="below" onClick={() => setUploadStep("description")}>
+                      Next
+                    </ButtonItem>
+                  </PanelSectionRow>
+                </>
+              )}
+              {uploadStep === "description" && (
+                <>
+                  <PanelSectionRow>
+                    <TextField
+                      label="Description"
+                      value={uploadDescription}
+                      onChange={(e) => setUploadDescription(e.target.value)}
+                    />
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <ButtonItem layout="below" onClick={() => setUploadStep("tags")}>
+                      Next
+                    </ButtonItem>
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <ButtonItem layout="below" onClick={() => setUploadStep("title")}>
+                      Back
+                    </ButtonItem>
+                  </PanelSectionRow>
+                </>
+              )}
+              {uploadStep === "tags" && (
+                <>
+                  <PanelSectionRow>
+                    <TextField
+                      label="Tags (comma-separated)"
+                      value={uploadTags}
+                      onChange={(e) => setUploadTags(e.target.value)}
+                    />
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <ButtonItem layout="below" onClick={() => setUploadStep("review")}>
+                      Next
+                    </ButtonItem>
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <ButtonItem layout="below" onClick={() => setUploadStep("description")}>
+                      Back
+                    </ButtonItem>
+                  </PanelSectionRow>
+                </>
+              )}
+              {uploadStep === "review" && (
+                <>
+                  <PanelSectionRow>
+                    <div style={{ fontSize: "11px", color: "#ccc" }}>
+                      <div><strong>Title:</strong> {uploadTitle}</div>
+                      <div><strong>Description:</strong> {uploadDescription || "(none)"}</div>
+                      <div><strong>Tags:</strong> {uploadTags || "(none)"}</div>
+                    </div>
+                  </PanelSectionRow>
+                  <InlineSelect
+                    label="Privacy"
+                    value={uploadPrivacy}
+                    options={privacyOptions.map((v) => ({ value: v, label: privacyLabel[v] }))}
+                    onChange={(v) => setUploadPrivacy(v)}
+                  />
+                  <PanelSectionRow>
+                    <ButtonItem
+                      layout="below"
+                      onClick={handleUpload}
+                      disabled={!isAuthenticated}
+                    >
+                      {isAuthenticated ? "Upload to YouTube" : "Connect YouTube in Settings first"}
+                    </ButtonItem>
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <ButtonItem layout="below" onClick={() => setUploadStep("tags")}>
+                      Back
+                    </ButtonItem>
+                  </PanelSectionRow>
+                </>
+              )}
               {hasError && (
                 <PanelSectionRow>
                   <div style={{ fontSize: "12px", color: "#f44" }}>
@@ -774,17 +845,68 @@ function Content() {
                   {formatSize(clip.size)} · {formatDate(clip.modified)}
                 </div>
               </PanelSectionRow>
+
+              {exportClip?.path === clip.path ? (
+                <>
+                  {!converting && conversionProgress?.status !== "complete" && (
+                    <>
+                      <PanelSectionRow>
+                        <TextField
+                          label="Export Name"
+                          value={exportName}
+                          onChange={(e) => setExportName(e.target.value)}
+                        />
+                      </PanelSectionRow>
+                      <PanelSectionRow>
+                        <ButtonItem layout="below" onClick={handleExportClip}>
+                          Start Export
+                        </ButtonItem>
+                      </PanelSectionRow>
+                      <PanelSectionRow>
+                        <ButtonItem layout="below" onClick={() => setExportClip(null)}>
+                          Cancel
+                        </ButtonItem>
+                      </PanelSectionRow>
+                    </>
+                  )}
+                  {converting && (
+                    <PanelSectionRow>
+                      <ProgressBarWithInfo
+                        nProgress={conversionProgress?.progress ?? 0}
+                        sOperationText="Converting..."
+                        sTimeRemaining={`${conversionProgress?.progress ?? 0}%`}
+                      />
+                    </PanelSectionRow>
+                  )}
+                  {conversionProgress?.status === "complete" && (
+                    <PanelSectionRow>
+                      <div style={{ fontSize: "12px", color: "#4CAF50" }}>
+                        Export complete!
+                      </div>
+                    </PanelSectionRow>
+                  )}
+                  {conversionProgress?.status === "error" && (
+                    <PanelSectionRow>
+                      <div style={{ fontSize: "12px", color: "#f44" }}>
+                        Error: {conversionProgress.error}
+                      </div>
+                    </PanelSectionRow>
+                  )}
+                </>
+              ) : (
+                <PanelSectionRow>
+                  <ButtonItem
+                    layout="below"
+                    onClick={() => handlePrepareExport(clip)}
+                    disabled={converting}
+                  >
+                    {converting ? "Converting..." : "Export to MP4"}
+                  </ButtonItem>
+                </PanelSectionRow>
+              )}
+
               <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  onClick={() => handleExportClip(clip)}
-                  disabled={converting}
-                >
-                  {converting ? "Converting..." : "Export to MP4"}
-                </ButtonItem>
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <ButtonItem layout="below" onClick={() => handleDeleteClip(clip)}>
+                <ButtonItem layout="below" onClick={() => handleDeleteClip(clip)} disabled={converting}>
                   Delete Clip
                 </ButtonItem>
               </PanelSectionRow>
@@ -834,6 +956,18 @@ function Content() {
               </div>
             </PanelSectionRow>
           )}
+          {converting && conversionProgress && view === "videos" && (
+            <PanelSectionRow>
+              <ProgressBarWithInfo
+                nProgress={conversionProgress.progress ?? 0}
+                sOperationText={
+                  conversionProgress.status === "complete" ? "Complete!" :
+                  conversionProgress.status === "error" ? "Error" : "Converting..."
+                }
+                sTimeRemaining={`${conversionProgress.progress ?? 0}%`}
+              />
+            </PanelSectionRow>
+          )}
           {filteredExportedVideos.map((video) => (
             <PanelSection key={video.path}>
               <PanelSectionRow>
@@ -845,6 +979,11 @@ function Content() {
                 <div style={{ fontSize: "11px", color: "#aaa" }}>
                   {video.game_id ? `${gameName(video.game_id)} · ` : ""}
                   {formatSize(video.size)} · {video.ext.toUpperCase()}
+                </div>
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <div style={{ fontSize: "10px", color: "#777", wordBreak: "break-all" }}>
+                  {video.path}
                 </div>
               </PanelSectionRow>
               {video.needs_conversion && (

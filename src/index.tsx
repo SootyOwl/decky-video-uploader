@@ -945,8 +945,13 @@ function Content() {
       <PanelSection>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => setView("settings")}>
-            Settings {isAuthenticated ? "(YouTube connected)" : "(YouTube not connected)"}
+            Settings
           </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: "12px", color: isAuthenticated ? "#8bc34a" : "#aaa", textAlign: "center" }}>
+            {isAuthenticated ? "YouTube connected" : "YouTube not connected"}
+          </div>
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => setView("clips")}>

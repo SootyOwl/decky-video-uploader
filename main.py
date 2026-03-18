@@ -1,4 +1,6 @@
 import os
+import glob
+import tempfile
 import asyncio
 import json
 import time
@@ -61,8 +63,101 @@ class Plugin:
     # Video discovery
     # ------------------------------------------------------------------
 
+    def _get_custom_record_path(self, userdata_dir: str):
+        """Read a custom Steam recording path from localconfig.vdf, if set."""
+        localconfig = os.path.join(userdata_dir, "config", "localconfig.vdf")
+        if not os.path.isfile(localconfig):
+            return None
+        try:
+            with open(localconfig, "r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    if '"BackgroundRecordPath"' in line:
+                        parts = line.split('"BackgroundRecordPath"', 1)
+                        if len(parts) > 1:
+                            value = parts[1].strip().strip('"')
+                            if value:
+                                return value
+        except Exception:
+            pass
+        return None
+
+    def _discover_steam_clips(self) -> list:
+        """Return clip-folder entries for Steam's internal MPEG-DASH game recordings.
+
+        Each entry has ``is_steam_clip=True`` and ``needs_conversion=True``.
+        The *path* field is the clip folder (a directory, not a file).
+        """
+        user_home = decky.DECKY_USER_HOME
+        clips: list = []
+
+        for steam_base in [
+            os.path.join(user_home, ".local", "share", "Steam", "userdata"),
+            os.path.join(user_home, ".steam", "steam", "userdata"),
+        ]:
+            if not os.path.isdir(steam_base):
+                continue
+            try:
+                for uid_entry in os.scandir(steam_base):
+                    if not uid_entry.is_dir():
+                        continue
+                    userdata_dir = uid_entry.path
+
+                    record_roots = [os.path.join(userdata_dir, "gamerecordings")]
+                    custom = self._get_custom_record_path(userdata_dir)
+                    if custom and os.path.isdir(custom):
+                        record_roots.append(custom)
+
+                    for record_root in record_roots:
+                        for subdir in ("clips", "video"):
+                            clip_parent = os.path.join(record_root, subdir)
+                            if not os.path.isdir(clip_parent):
+                                continue
+                            try:
+                                for clip_entry in os.scandir(clip_parent):
+                                    if not clip_entry.is_dir():
+                                        continue
+                                    clip_folder = clip_entry.path
+                                    # A valid Steam recording has session.mpd at depth 0 or 1
+                                    has_mpd = os.path.isfile(
+                                        os.path.join(clip_folder, "session.mpd")
+                                    ) or any(
+                                        os.path.isfile(os.path.join(clip_folder, d, "session.mpd"))
+                                        for d in os.listdir(clip_folder)
+                                        if os.path.isdir(os.path.join(clip_folder, d))
+                                    )
+                                    if not has_mpd:
+                                        continue
+                                    total_size = sum(
+                                        os.path.getsize(os.path.join(r, f))
+                                        for r, _d, fs in os.walk(clip_folder)
+                                        for f in fs
+                                        if f.endswith(".m4s")
+                                    )
+                                    try:
+                                        mtime = clip_entry.stat().st_mtime
+                                    except OSError:
+                                        mtime = 0.0
+                                    clips.append(
+                                        {
+                                            "path": clip_folder,
+                                            "name": os.path.basename(clip_folder),
+                                            "size": total_size,
+                                            "modified": mtime,
+                                            "ext": "steam_clip",
+                                            "needs_conversion": True,
+                                            "is_steam_clip": True,
+                                        }
+                                    )
+                            except PermissionError:
+                                pass
+            except PermissionError:
+                pass
+
+        return clips
+
     async def get_video_files(self) -> list:
-        """Return a list of video files found in Steam / user video directories."""
+        """Return a list of video files found in Steam / user video directories,
+        including unexported Steam game recording clips."""
         user_home = decky.DECKY_USER_HOME
         search_roots: list = [os.path.join(user_home, "Videos")]
 
@@ -103,12 +198,16 @@ class Plugin:
                                     "modified": st.st_mtime,
                                     "ext": ext,
                                     "needs_conversion": ext != ".mp4",
+                                    "is_steam_clip": False,
                                 }
                             )
                         except OSError:
                             pass
             except PermissionError:
                 pass
+
+        # Include unexported Steam game recording clips
+        videos.extend(self._discover_steam_clips())
 
         videos.sort(key=lambda v: v["modified"], reverse=True)
         return videos
@@ -182,6 +281,183 @@ class Plugin:
             )
         except Exception as exc:
             await decky.emit("conversion_progress", {"status": "error", "error": str(exc)})
+
+    # ------------------------------------------------------------------
+    # Steam clip conversion (m4s MPEG-DASH → MP4)
+    # ------------------------------------------------------------------
+
+    async def convert_steam_clip(self, clip_folder: str) -> dict:
+        """Convert a Steam internal MPEG-DASH game recording to MP4.
+
+        *clip_folder* must be a directory containing a ``session.mpd`` file.
+        Returns immediately; emits *conversion_progress* events when done.
+        """
+        if not os.path.isdir(clip_folder):
+            return {"success": False, "error": "Clip folder not found"}
+        asyncio.get_event_loop().create_task(self._run_steam_clip_conversion(clip_folder))
+        return {"success": True, "started": True}
+
+    async def _ffmpeg_concat(self, file_list: list, is_video: bool) -> str:
+        """Concatenate multiple MP4 segments with ffmpeg; returns path to output file."""
+        list_tmp = tempfile.NamedTemporaryFile(
+            delete=False, mode="w", suffix=".txt"
+        )
+        for path in file_list:
+            list_tmp.write(f"file '{path}'\n")
+        list_tmp.close()
+        out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        out_path = out_tmp.name
+        out_tmp.close()
+        try:
+            args = [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", list_tmp.name, "-c", "copy",
+            ]
+            if is_video:
+                args.extend(["-movflags", "+faststart", "-max_muxing_queue_size", "1024"])
+            args.append(out_path)
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _out, err = await proc.communicate()
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    "ffmpeg concat failed: "
+                    + err.decode("utf-8", errors="replace")[-300:]
+                )
+        finally:
+            try:
+                os.unlink(list_tmp.name)
+            except OSError:
+                pass
+        return out_path
+
+    async def _run_steam_clip_conversion(self, clip_folder: str) -> None:
+        os.makedirs(self._converted_dir(), exist_ok=True)
+        clip_name = os.path.basename(clip_folder)
+        output_path = os.path.join(self._converted_dir(), f"{clip_name}.mp4")
+        counter = 1
+        while os.path.exists(output_path):
+            output_path = os.path.join(self._converted_dir(), f"{clip_name}_{counter}.mp4")
+            counter += 1
+
+        await decky.emit("conversion_progress", {"status": "started", "source": clip_folder})
+        temp_files: list = []
+        try:
+            # Find all session directories (one per recording segment)
+            session_dirs = sorted(
+                root
+                for root, _dirs, files in os.walk(clip_folder)
+                if "session.mpd" in files
+            )
+            if not session_dirs:
+                await decky.emit(
+                    "conversion_progress",
+                    {"status": "error", "error": "No Steam recording data found in clip folder"},
+                )
+                return
+
+            temp_videos: list = []
+            temp_audios: list = []
+
+            for data_dir in session_dirs:
+                init_video = os.path.join(data_dir, "init-stream0.m4s")
+                init_audio = os.path.join(data_dir, "init-stream1.m4s")
+                if not (os.path.exists(init_video) and os.path.exists(init_audio)):
+                    decky.logger.warning(
+                        f"Missing init segments in {data_dir}, skipping"
+                    )
+                    continue
+
+                # Binary-concatenate init segment + chunk segments into one temp mp4
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".mp4"
+                ) as tmp_v:
+                    tmp_v_path = tmp_v.name
+                    with open(init_video, "rb") as f:
+                        tmp_v.write(f.read())
+                    for chunk in sorted(
+                        glob.glob(os.path.join(data_dir, "chunk-stream0-*.m4s"))
+                    ):
+                        with open(chunk, "rb") as f:
+                            tmp_v.write(f.read())
+
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".mp4"
+                ) as tmp_a:
+                    tmp_a_path = tmp_a.name
+                    with open(init_audio, "rb") as f:
+                        tmp_a.write(f.read())
+                    for chunk in sorted(
+                        glob.glob(os.path.join(data_dir, "chunk-stream1-*.m4s"))
+                    ):
+                        with open(chunk, "rb") as f:
+                            tmp_a.write(f.read())
+
+                temp_files.extend([tmp_v_path, tmp_a_path])
+                temp_videos.append(tmp_v_path)
+                temp_audios.append(tmp_a_path)
+
+            if not temp_videos:
+                await decky.emit(
+                    "conversion_progress",
+                    {"status": "error", "error": "Missing m4s init segments in clip"},
+                )
+                return
+
+            # If multiple recording sessions, concatenate across sessions
+            if len(temp_videos) > 1:
+                final_video = await self._ffmpeg_concat(temp_videos, is_video=True)
+                final_audio = await self._ffmpeg_concat(temp_audios, is_video=False)
+                temp_files.extend([final_video, final_audio])
+            else:
+                final_video = temp_videos[0]
+                final_audio = temp_audios[0]
+
+            # Merge video + audio streams into the output mp4
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y",
+                "-i", final_video,
+                "-i", final_audio,
+                "-c", "copy",
+                output_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _stdout, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                await decky.emit(
+                    "conversion_progress",
+                    {
+                        "status": "complete",
+                        "output_path": output_path,
+                        "size": os.path.getsize(output_path),
+                    },
+                )
+            else:
+                err = stderr.decode("utf-8", errors="replace")[-500:]
+                await decky.emit(
+                    "conversion_progress",
+                    {"status": "error", "error": f"ffmpeg error: {err}"},
+                )
+        except FileNotFoundError:
+            await decky.emit(
+                "conversion_progress",
+                {"status": "error", "error": "ffmpeg not found. Please install ffmpeg."},
+            )
+        except Exception as exc:
+            await decky.emit(
+                "conversion_progress", {"status": "error", "error": str(exc)}
+            )
+        finally:
+            for fpath in temp_files:
+                try:
+                    if os.path.exists(fpath):
+                        os.unlink(fpath)
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------
     # Credentials

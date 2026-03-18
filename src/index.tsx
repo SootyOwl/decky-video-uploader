@@ -22,6 +22,7 @@ import { FaYoutube } from "react-icons/fa";
 // ---------------------------------------------------------------------------
 const getVideoFiles = callable<[], VideoFile[]>("get_video_files");
 const convertToMp4 = callable<[source_path: string], CallResult>("convert_to_mp4");
+const convertSteamClip = callable<[clip_folder: string], CallResult>("convert_steam_clip");
 const saveCredentials = callable<[client_id: string, client_secret: string], CallResult>(
   "save_credentials"
 );
@@ -53,6 +54,7 @@ interface VideoFile {
   modified: number;
   ext: string;
   needs_conversion: boolean;
+  is_steam_clip: boolean;
 }
 
 interface CallResult {
@@ -490,8 +492,9 @@ function Content() {
         {videos.length === 0 && !loading && (
           <PanelSectionRow>
             <div style={{ fontSize: "12px", color: "#aaa" }}>
-              No video files found. Game recordings are usually stored in
-              ~/.local/share/Steam/userdata/[user-id]/760/remote or ~/Videos.
+              No video files found. Exported recordings are in ~/Videos or
+              ~/.local/share/Steam/userdata/[id]/760/remote. Unexported Steam game
+              clips live in gamerecordings/clips or gamerecordings/video.
             </div>
           </PanelSectionRow>
         )}
@@ -506,30 +509,39 @@ function Content() {
                   marginBottom: "2px",
                 }}
               >
+                {video.is_steam_clip && (
+                  <span style={{ color: "#4fc3f7", marginRight: "4px" }}>🎮</span>
+                )}
                 {video.name}
               </div>
             </PanelSectionRow>
             <PanelSectionRow>
               <div style={{ fontSize: "11px", color: "#aaa" }}>
-                {formatSize(video.size)} · {video.ext.toUpperCase()}
+                {formatSize(video.size)} · {video.is_steam_clip ? "Steam Clip (not exported)" : video.ext.toUpperCase()}
               </div>
             </PanelSectionRow>
             {video.needs_conversion && (
               <PanelSectionRow>
                 <ButtonItem
                   layout="below"
-                  onClick={() => convertToMp4(video.path)}
+                  onClick={() =>
+                    video.is_steam_clip
+                      ? convertSteamClip(video.path)
+                      : convertToMp4(video.path)
+                  }
                   disabled={converting}
                 >
                   {converting ? "Converting…" : "Convert to MP4"}
                 </ButtonItem>
               </PanelSectionRow>
             )}
-            <PanelSectionRow>
-              <ButtonItem layout="below" onClick={() => handleSelectForUpload(video)}>
-                Upload to YouTube
-              </ButtonItem>
-            </PanelSectionRow>
+            {!video.is_steam_clip && (
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={() => handleSelectForUpload(video)}>
+                  Upload to YouTube
+                </ButtonItem>
+              </PanelSectionRow>
+            )}
           </PanelSection>
         ))}
       </PanelSection>

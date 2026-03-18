@@ -776,21 +776,25 @@ function Content() {
         </PanelSection>
 
         <PanelSection title="Filters">
-          <InlineSelect
-            label="Game"
-            value={clipGameFilter}
-            options={uniqueClipGameIds.map((g) => ({
-              value: g,
-              label: g === "all" ? "All Games" : gameName(g),
-            }))}
-            onChange={(v) => setClipGameFilter(v)}
-          />
-          <InlineSelect
-            label="Type"
-            value={clipTypeFilter}
-            options={typeOptions.map((v) => ({ value: v, label: typeLabel[v] }))}
-            onChange={(v) => setClipTypeFilter(v)}
-          />
+          {uniqueClipGameIds.length > 2 && (
+            <InlineSelect
+              label="Game"
+              value={clipGameFilter}
+              options={uniqueClipGameIds.map((g) => ({
+                value: g,
+                label: g === "all" ? "All Games" : gameName(g),
+              }))}
+              onChange={(v) => setClipGameFilter(v)}
+            />
+          )}
+          {new Set(steamClips.map((c) => c.clip_type)).size > 1 && (
+            <InlineSelect
+              label="Type"
+              value={clipTypeFilter}
+              options={typeOptions.map((v) => ({ value: v, label: typeLabel[v] }))}
+              onChange={(v) => setClipTypeFilter(v)}
+            />
+          )}
           <PanelSectionRow>
             <ButtonItem
               layout="below"
@@ -887,7 +891,7 @@ function Content() {
         </PanelSection>
 
         <PanelSection title="Filter">
-          {uniqueVideoGroups.length > 1 && (
+          {uniqueVideoGroups.length > 2 && (
             <InlineSelect
               label="Game"
               value={videoGameFilter}

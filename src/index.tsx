@@ -70,6 +70,7 @@ interface VideoFile {
   is_steam_clip: boolean;
   game_id?: string;
   clip_type?: string;
+  subfolder?: string;
 }
 
 interface PluginSettings {
@@ -401,15 +402,20 @@ function Content() {
     [steamClips]
   );
 
-  const uniqueVideoGameIds = useMemo(
+  const videoGroupKey = useCallback(
+    (v: VideoFile) => v.subfolder || v.game_id || "",
+    []
+  );
+
+  const uniqueVideoGroups = useMemo(
     () =>
       [
         "all",
         ...Array.from(
-          new Set(exportedVideos.map((v) => v.game_id ?? "").filter(Boolean))
+          new Set(exportedVideos.map(videoGroupKey).filter(Boolean))
         ).sort(),
       ],
-    [exportedVideos]
+    [exportedVideos, videoGroupKey]
   );
 
   const filteredClips = useMemo(
@@ -430,12 +436,12 @@ function Content() {
     () =>
       exportedVideos
         .filter(
-          (v) => videoGameFilter === "all" || v.game_id === videoGameFilter
+          (v) => videoGameFilter === "all" || videoGroupKey(v) === videoGameFilter
         )
         .sort((a, b) =>
           videoSort === "size" ? b.size - a.size : b.modified - a.modified
         ),
-    [exportedVideos, videoGameFilter, videoSort]
+    [exportedVideos, videoGameFilter, videoSort, videoGroupKey]
   );
 
   // ── Game name helper ──────────────────────────────────────────────────────
@@ -881,13 +887,13 @@ function Content() {
         </PanelSection>
 
         <PanelSection title="Filter">
-          {uniqueVideoGameIds.length > 1 && (
+          {uniqueVideoGroups.length > 1 && (
             <InlineSelect
               label="Game"
               value={videoGameFilter}
-              options={uniqueVideoGameIds.map((g) => ({
+              options={uniqueVideoGroups.map((g) => ({
                 value: g,
-                label: g === "all" ? "All Games" : gameName(g),
+                label: g === "all" ? "All" : (/^\d+$/.test(g) ? gameName(g) : g),
               }))}
               onChange={(v) => setVideoGameFilter(v)}
             />

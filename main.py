@@ -363,6 +363,9 @@ class Plugin:
                             )
                             if m:
                                 game_id = m.group(1)
+                            # Subfolder relative to search root (empty if at root)
+                            rel = os.path.relpath(dirpath, root)
+                            subfolder = "" if rel == "." else rel.split(os.sep)[0]
                             videos.append(
                                 {
                                     "path": fpath,
@@ -373,6 +376,7 @@ class Plugin:
                                     "needs_conversion": ext != ".mp4",
                                     "is_steam_clip": False,
                                     "game_id": game_id,
+                                    "subfolder": subfolder,
                                 }
                             )
                         except OSError:

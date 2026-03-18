@@ -20,7 +20,7 @@ import {
   toaster,
 } from "@decky/api";
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { FaTrash, FaYoutube } from "react-icons/fa";
+import { FaSyncAlt, FaTrash, FaYoutube } from "react-icons/fa";
 
 // ---------------------------------------------------------------------------
 // Backend callables
@@ -770,7 +770,7 @@ function Content() {
                 Back
               </DialogButton>
               <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px" }}>
-                {loading ? "..." : "⟳"}
+                {loading ? "..." : <FaSyncAlt />}
               </DialogButton>
             </Focusable>
           </PanelSectionRow>
@@ -885,7 +885,7 @@ function Content() {
                 Back
               </DialogButton>
               <DialogButton onClick={refreshVideos} disabled={loading} style={{ minWidth: 0, width: "auto", padding: "0 12px" }}>
-                {loading ? "..." : "⟳"}
+                {loading ? "..." : <FaSyncAlt />}
               </DialogButton>
             </Focusable>
           </PanelSectionRow>
@@ -1011,7 +1011,7 @@ function Content() {
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={refreshVideos} disabled={loading}>
-            {loading ? "Scanning..." : "⟳ Refresh"}
+            {loading ? "Scanning..." : <><FaSyncAlt style={{ marginRight: "8px" }} /> Refresh</>}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>

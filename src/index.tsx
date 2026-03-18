@@ -1,8 +1,11 @@
 import {
   ButtonItem,
+  ConfirmModal,
+  DialogBody,
   PanelSection,
   PanelSectionRow,
   ProgressBarWithInfo,
+  showModal,
   TextField,
   staticClasses,
 } from "@decky/ui";
@@ -118,7 +121,102 @@ interface ConversionProgress {
   error?: string;
 }
 
-type View = "list" | "clips" | "videos" | "settings" | "upload";
+type View = "list" | "clips" | "videos" | "settings";
+
+// ---------------------------------------------------------------------------
+// UploadModal — full-screen modal for YouTube upload form.
+//
+// Opens over everything (including the QAM panel) so the on-screen keyboard
+// doesn't overlap any fields.  The upload itself runs in the background after
+// the modal closes — progress / completion is reported via toast notifications.
+// ---------------------------------------------------------------------------
+function UploadModal({
+  closeModal,
+  video,
+  authenticated,
+}: {
+  closeModal: () => void;
+  video: VideoFile;
+  authenticated: boolean;
+}) {
+  const [title, setTitle] = useState(video.name.replace(/\.[^/.]+$/, ""));
+  const [description, setDescription] = useState("");
+  const [tags, setTags] = useState("");
+  const [privacy, setPrivacy] = useState<"private" | "unlisted" | "public">("private");
+
+  const privacyLabels: Record<string, string> = {
+    private: "Private",
+    unlisted: "Unlisted",
+    public: "Public",
+  };
+
+  return (
+    <ConfirmModal
+      strTitle="Upload to YouTube"
+      strOKButtonText={authenticated ? "Upload" : "YouTube not connected"}
+      bOKDisabled={!authenticated}
+      strCancelButtonText="Cancel"
+      onOK={() => {
+        uploadToYoutube(
+          video.path,
+          title || video.name,
+          description,
+          tags,
+          privacy
+        ).then((result) => {
+          if (result.success) {
+            toaster.toast({ title: "Upload Started", body: `Uploading "${title || video.name}"...` });
+          } else {
+            toaster.toast({ title: "Upload Error", body: result.error ?? "Failed to start upload" });
+          }
+        });
+      }}
+      onCancel={closeModal}
+      closeModal={closeModal}
+    >
+      <DialogBody>
+        <div style={{ fontSize: "12px", color: "#aaa", marginBottom: "12px" }}>
+          {video.name} ({formatSize(video.size)})
+        </div>
+        <TextField
+          label="Title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+        <TextField
+          label="Description"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+        <TextField
+          label="Tags (comma-separated)"
+          value={tags}
+          onChange={(e) => setTags(e.target.value)}
+        />
+        <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+          {(["private", "unlisted", "public"] as const).map((opt) => (
+            <button
+              key={opt}
+              onClick={() => setPrivacy(opt)}
+              style={{
+                flex: 1,
+                padding: "8px",
+                border: "none",
+                borderRadius: "4px",
+                background: privacy === opt ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.05)",
+                color: privacy === opt ? "#fff" : "#aaa",
+                fontWeight: privacy === opt ? "bold" : "normal",
+                cursor: "pointer",
+              }}
+            >
+              {privacyLabels[opt]}
+            </button>
+          ))}
+        </div>
+      </DialogBody>
+    </ConfirmModal>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -210,15 +308,6 @@ function Content() {
   });
   const [loading, setLoading] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [selectedVideo, setSelectedVideo] = useState<VideoFile | null>(null);
-
-  // Upload form state
-  const [uploadTitle, setUploadTitle] = useState("");
-  const [uploadDescription, setUploadDescription] = useState("");
-  const [uploadTags, setUploadTags] = useState("");
-  const [uploadPrivacy, setUploadPrivacy] = useState<"private" | "unlisted" | "public">("private");
-  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
-  const [uploadStep, setUploadStep] = useState<"title" | "description" | "tags" | "review">("title");
 
   // Auth state
   const [clientId, setClientId] = useState("");
@@ -332,10 +421,6 @@ function Content() {
 
   // ── Event listeners ───────────────────────────────────────────────────────
   useEffect(() => {
-    const uploadListener = addEventListener<[UploadProgress]>(
-      "upload_progress",
-      (progress) => setUploadProgress(progress)
-    );
     const conversionListener = addEventListener<[ConversionProgress]>(
       "conversion_progress",
       (progress) => {
@@ -348,7 +433,6 @@ function Content() {
       }
     );
     return () => {
-      removeEventListener("upload_progress", uploadListener);
       removeEventListener("conversion_progress", conversionListener);
     };
   }, [refreshVideos]);
@@ -423,30 +507,15 @@ function Content() {
     }
   };
 
-  // ── Upload handlers ───────────────────────────────────────────────────────
+  // ── Upload handler ────────────────────────────────────────────────────────
   const handleSelectForUpload = (video: VideoFile) => {
-    setSelectedVideo(video);
-    setUploadTitle(video.name.replace(/\.[^/.]+$/, ""));
-    setUploadDescription("");
-    setUploadTags("");
-    setUploadPrivacy("private");
-    setUploadProgress(null);
-    setUploadStep("title");
-    setView("upload");
-  };
-
-  const handleUpload = async () => {
-    if (!selectedVideo) return;
-    const result = await uploadToYoutube(
-      selectedVideo.path,
-      uploadTitle || selectedVideo.name,
-      uploadDescription,
-      uploadTags,
-      uploadPrivacy
+    showModal(
+      <UploadModal
+        closeModal={() => {/* filled by showModal */}}
+        video={video}
+        authenticated={isAuthenticated}
+      />
     );
-    if (!result.success) {
-      toaster.toast({ title: "Upload Error", body: result.error ?? "Failed to start upload" });
-    }
   };
 
   // ── Clip handlers ─────────────────────────────────────────────────────────
@@ -606,167 +675,6 @@ function Content() {
                 </>
               )}
             </>
-          )}
-        </PanelSection>
-      </>
-    );
-  }
-
-  // ── Upload form view ──────────────────────────────────────────────────────
-  if (view === "upload" && selectedVideo) {
-    const privacyOptions: Array<"private" | "unlisted" | "public"> = [
-      "private",
-      "unlisted",
-      "public",
-    ];
-    const privacyLabel: Record<string, string> = {
-      private: "Private",
-      unlisted: "Unlisted",
-      public: "Public",
-    };
-
-    const isUploading =
-      uploadProgress != null &&
-      (uploadProgress.status === "starting" || uploadProgress.status === "uploading");
-    const isComplete = uploadProgress?.status === "complete";
-    const hasError = uploadProgress?.status === "error";
-
-    return (
-      <>
-        <PanelSection>
-          <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => setView("videos")} disabled={isUploading}>
-              Back
-            </ButtonItem>
-          </PanelSectionRow>
-        </PanelSection>
-
-        <PanelSection title="Upload to YouTube">
-          <PanelSectionRow>
-            <div style={{ fontSize: "12px", color: "#ccc", wordBreak: "break-all" }}>
-              {selectedVideo.name} ({formatSize(selectedVideo.size)})
-            </div>
-          </PanelSectionRow>
-
-          {!isUploading && !isComplete && (
-            <>
-              {uploadStep === "title" && (
-                <>
-                  <PanelSectionRow>
-                    <TextField
-                      label="Title"
-                      value={uploadTitle}
-                      onChange={(e) => setUploadTitle(e.target.value)}
-                    />
-                  </PanelSectionRow>
-                  <PanelSectionRow>
-                    <ButtonItem layout="below" onClick={() => setUploadStep("description")}>
-                      Next
-                    </ButtonItem>
-                  </PanelSectionRow>
-                </>
-              )}
-              {uploadStep === "description" && (
-                <>
-                  <PanelSectionRow>
-                    <TextField
-                      label="Description"
-                      value={uploadDescription}
-                      onChange={(e) => setUploadDescription(e.target.value)}
-                    />
-                  </PanelSectionRow>
-                  <PanelSectionRow>
-                    <ButtonItem layout="below" onClick={() => setUploadStep("tags")}>
-                      Next
-                    </ButtonItem>
-                  </PanelSectionRow>
-                  <PanelSectionRow>
-                    <ButtonItem layout="below" onClick={() => setUploadStep("title")}>
-                      Back
-                    </ButtonItem>
-                  </PanelSectionRow>
-                </>
-              )}
-              {uploadStep === "tags" && (
-                <>
-                  <PanelSectionRow>
-                    <TextField
-                      label="Tags (comma-separated)"
-                      value={uploadTags}
-                      onChange={(e) => setUploadTags(e.target.value)}
-                    />
-                  </PanelSectionRow>
-                  <PanelSectionRow>
-                    <ButtonItem layout="below" onClick={() => setUploadStep("review")}>
-                      Next
-                    </ButtonItem>
-                  </PanelSectionRow>
-                  <PanelSectionRow>
-                    <ButtonItem layout="below" onClick={() => setUploadStep("description")}>
-                      Back
-                    </ButtonItem>
-                  </PanelSectionRow>
-                </>
-              )}
-              {uploadStep === "review" && (
-                <>
-                  <PanelSectionRow>
-                    <div style={{ fontSize: "11px", color: "#ccc" }}>
-                      <div><strong>Title:</strong> {uploadTitle}</div>
-                      <div><strong>Description:</strong> {uploadDescription || "(none)"}</div>
-                      <div><strong>Tags:</strong> {uploadTags || "(none)"}</div>
-                    </div>
-                  </PanelSectionRow>
-                  <InlineSelect
-                    label="Privacy"
-                    value={uploadPrivacy}
-                    options={privacyOptions.map((v) => ({ value: v, label: privacyLabel[v] }))}
-                    onChange={(v) => setUploadPrivacy(v)}
-                  />
-                  <PanelSectionRow>
-                    <ButtonItem
-                      layout="below"
-                      onClick={handleUpload}
-                      disabled={!isAuthenticated}
-                    >
-                      {isAuthenticated ? "Upload to YouTube" : "Connect YouTube in Settings first"}
-                    </ButtonItem>
-                  </PanelSectionRow>
-                  <PanelSectionRow>
-                    <ButtonItem layout="below" onClick={() => setUploadStep("tags")}>
-                      Back
-                    </ButtonItem>
-                  </PanelSectionRow>
-                </>
-              )}
-              {hasError && (
-                <PanelSectionRow>
-                  <div style={{ fontSize: "12px", color: "#f44" }}>
-                    Error: {uploadProgress?.error}
-                  </div>
-                </PanelSectionRow>
-              )}
-            </>
-          )}
-
-          {isUploading && (
-            <PanelSectionRow>
-              <ProgressBarWithInfo
-                nProgress={uploadProgress?.progress ?? 0}
-                sOperationText={
-                  uploadProgress?.status === "starting" ? "Starting..." : "Uploading..."
-                }
-                sTimeRemaining={`${uploadProgress?.progress ?? 0}%`}
-              />
-            </PanelSectionRow>
-          )}
-
-          {isComplete && (
-            <PanelSectionRow>
-              <div style={{ fontSize: "12px", color: "#4CAF50", wordBreak: "break-all" }}>
-                Upload complete! {uploadProgress?.video_url}
-              </div>
-            </PanelSectionRow>
           )}
         </PanelSection>
       </>
@@ -1049,15 +957,28 @@ function Content() {
 export default definePlugin(() => {
   console.log("Video Uploader plugin initializing");
 
+  let lastUploadMilestone = 0;
   const uploadListener = addEventListener<[UploadProgress]>(
     "upload_progress",
     (progress) => {
-      if (progress.status === "complete") {
+      if (progress.status === "uploading" && progress.progress != null) {
+        // Show toast at 25% milestones
+        const milestone = Math.floor(progress.progress / 25) * 25;
+        if (milestone > 0 && milestone > lastUploadMilestone) {
+          lastUploadMilestone = milestone;
+          toaster.toast({
+            title: "Uploading...",
+            body: `Upload progress: ${milestone}%`,
+          });
+        }
+      } else if (progress.status === "complete") {
+        lastUploadMilestone = 0;
         toaster.toast({
           title: "Upload Complete!",
           body: `Video uploaded: ${progress.video_url}`,
         });
       } else if (progress.status === "error") {
+        lastUploadMilestone = 0;
         toaster.toast({
           title: "Upload Failed",
           body: progress.error ?? "Unknown error",

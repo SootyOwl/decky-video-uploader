@@ -6,12 +6,55 @@ import tempfile
 import asyncio
 import json
 import time
+import ssl
 import http.client
 import urllib.request
 import urllib.parse
 import urllib.error
 
 import decky
+
+# ---------------------------------------------------------------------------
+# SSL context — Steam Deck (Arch-based) may ship a Python that cannot find
+# the system CA bundle automatically.  We try several common locations so
+# that urllib / http.client HTTPS calls succeed without disabling verification.
+# ---------------------------------------------------------------------------
+def _make_ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    # If the default context already has CA certs loaded, just use it.
+    try:
+        ctx.load_default_locations()
+    except Exception:
+        pass
+    # Probe well-known CA bundle paths (Arch, Fedora, Debian, Alpine, etc.)
+    _CA_PATHS = [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+        "/usr/share/ca-certificates",
+        "/etc/ssl/certs",
+    ]
+    for p in _CA_PATHS:
+        try:
+            if os.path.isfile(p):
+                ctx.load_verify_locations(cafile=p)
+                return ctx
+            elif os.path.isdir(p):
+                ctx.load_verify_locations(capath=p)
+                return ctx
+        except Exception:
+            continue
+    # Last resort: try certifi if installed
+    try:
+        import certifi
+        ctx.load_verify_locations(cafile=certifi.where())
+        return ctx
+    except Exception:
+        pass
+    return ctx
+
+SSL_CTX = _make_ssl_context()
 
 # ---------------------------------------------------------------------------
 # YouTube API constants
@@ -692,7 +735,7 @@ class Plugin:
                 {"client_id": cid, "scope": YOUTUBE_SCOPE}
             ).encode()
             req = urllib.request.Request(YOUTUBE_DEVICE_CODE_URL, data=body, method="POST")
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30, context=SSL_CTX) as resp:
                 data = json.loads(resp.read())
             self._auth_state = {
                 "client_id": cid,
@@ -738,7 +781,7 @@ class Plugin:
                 }
             ).encode()
             req = urllib.request.Request(YOUTUBE_TOKEN_URL, data=body, method="POST")
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30, context=SSL_CTX) as resp:
                 data = json.loads(resp.read())
             token = {
                 "access_token": data["access_token"],
@@ -800,7 +843,7 @@ class Plugin:
                 }
             ).encode()
             req = urllib.request.Request(YOUTUBE_TOKEN_URL, data=body, method="POST")
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30, context=SSL_CTX) as resp:
                 data = json.loads(resp.read())
             token["access_token"] = data["access_token"]
             token["expires_at"] = time.time() + data.get("expires_in", 3600)
@@ -825,7 +868,8 @@ class Plugin:
                     + urllib.parse.quote(token["access_token"])
                 )
                 urllib.request.urlopen(
-                    urllib.request.Request(revoke_url, method="POST"), timeout=10
+                    urllib.request.Request(revoke_url, method="POST"), timeout=10,
+                    context=SSL_CTX,
                 )
             except Exception:
                 pass  # still remove local token on failure
@@ -917,7 +961,7 @@ class Plugin:
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(init_req, timeout=30) as resp:
+            with urllib.request.urlopen(init_req, timeout=30, context=SSL_CTX) as resp:
                 upload_url = resp.headers.get("Location")
 
             if not upload_url:
@@ -977,7 +1021,7 @@ class Plugin:
                     "Content-Range": f"bytes {bytes_uploaded}-{chunk_end}/{file_size}",
                     "Content-Type": "video/*",
                 }
-                conn = http.client.HTTPSConnection(parsed.netloc, timeout=300)
+                conn = http.client.HTTPSConnection(parsed.netloc, timeout=300, context=SSL_CTX)
                 try:
                     conn.request("PUT", path_qs, body=chunk, headers=headers)
                     resp = conn.getresponse()

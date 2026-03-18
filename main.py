@@ -773,13 +773,15 @@ class Plugin:
             self._auth_state = {}
             return {"success": False, "error": "Auth flow expired. Please start again."}
         try:
-            params = {
-                "client_id": state["client_id"],
-                "client_secret": state["client_secret"],
-                "device_code": state["device_code"],
-                "grant_type": "urn:ietf:params:oauth2:grant-type:device_code",
-            }
-            body = urllib.parse.urlencode(params).encode()
+            # Build body manually — urllib.parse.urlencode percent-encodes
+            # the colons in the grant_type URN which Google may reject.
+            parts = [
+                "client_id=" + urllib.parse.quote(state["client_id"], safe=""),
+                "client_secret=" + urllib.parse.quote(state["client_secret"], safe=""),
+                "device_code=" + urllib.parse.quote(state["device_code"], safe=""),
+                "grant_type=urn:ietf:params:oauth2:grant-type:device_code",
+            ]
+            body = "&".join(parts).encode()
             decky.logger.info(f"[poll_auth] POST {YOUTUBE_TOKEN_URL}")
             decky.logger.info(f"[poll_auth] body={body!r}")
             req = urllib.request.Request(YOUTUBE_TOKEN_URL, data=body, method="POST")

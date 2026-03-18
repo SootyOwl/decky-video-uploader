@@ -954,6 +954,13 @@ function Content() {
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
+          <div style={{ fontSize: "11px", color: "#888", textAlign: "center", lineHeight: "1.6" }}>
+            {steamClips.length} clip{steamClips.length !== 1 ? "s" : ""} ({formatSize(steamClips.reduce((sum, c) => sum + c.size, 0))})
+            {" · "}
+            {exportedVideos.length} video{exportedVideos.length !== 1 ? "s" : ""} ({formatSize(exportedVideos.reduce((sum, v) => sum + v.size, 0))})
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => setView("clips")}>
             Steam Clips ({steamClips.length})
           </ButtonItem>

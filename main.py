@@ -25,8 +25,8 @@ YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 # Replace these with your own values from the Google Cloud Console.
 # For device-flow clients the secret is not truly confidential — Google
 # documents that it may be embedded in distributed applications.
-DEFAULT_CLIENT_ID = "YOUR_CLIENT_ID.apps.googleusercontent.com"
-DEFAULT_CLIENT_SECRET = "YOUR_CLIENT_SECRET"
+DEFAULT_CLIENT_ID = "267858990226-t964tp8m6oina39elk8obk2fq0h8sdar.apps.googleusercontent.com"
+DEFAULT_CLIENT_SECRET = "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"
 
 # Supported video file extensions
 VIDEO_EXTENSIONS = frozenset([".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".ts"])

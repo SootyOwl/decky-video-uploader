@@ -1,11 +1,10 @@
 {
-  "name": "Example Plugin",
-  "author": "John Doe",
+  "name": "Video Uploader",
+  "author": "SootyOwl",
   "flags": ["debug", "_root"],
   "api_version": 1,
   "publish": {
-    "tags": ["template", "root"],
-    "description": "Decky example plugin.",
-    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+    "tags": ["video", "youtube", "upload", "export", "root"],
+    "description": "Export saved gameplay videos as MP4 and upload them to YouTube directly from Game Mode."
   }
 }

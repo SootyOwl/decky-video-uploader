@@ -219,6 +219,54 @@ function UploadModal({
 }
 
 // ---------------------------------------------------------------------------
+// ExportModal — full-screen modal for naming a clip before MP4 export.
+// ---------------------------------------------------------------------------
+function ExportModal({
+  closeModal,
+  clip,
+  gameName: gName,
+}: {
+  closeModal: () => void;
+  clip: VideoFile;
+  gameName: string;
+}) {
+  const defaultName = `${gName} - ${clip.clip_type === "video" ? "Recording" : "Clip"} ${formatDateTime(clip.modified)}`;
+  const [name, setName] = useState(defaultName);
+
+  return (
+    <ConfirmModal
+      strTitle="Export to MP4"
+      strOKButtonText="Export"
+      strCancelButtonText="Cancel"
+      onOK={() => {
+        convertSteamClip(clip.path, clip.game_id ?? "", name).then((result) => {
+          if (result.success) {
+            toaster.toast({ title: "Export Started", body: `Exporting "${name}"...` });
+          } else {
+            toaster.toast({ title: "Export Error", body: result.error ?? "Failed to start export" });
+          }
+        });
+      }}
+      onCancel={closeModal}
+      closeModal={closeModal}
+    >
+      <DialogBody>
+        <div style={{ fontSize: "12px", color: "#aaa", marginBottom: "12px" }}>
+          {gName} · {clip.clip_type === "video" ? "Background Recording" : "Manual Clip"}
+          <br />
+          {formatSize(clip.size)} · {formatDate(clip.modified)}
+        </div>
+        <TextField
+          label="Export Name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </DialogBody>
+    </ConfirmModal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 function formatSize(bytes: number): string {
@@ -230,6 +278,12 @@ function formatSize(bytes: number): string {
 
 function formatDate(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString();
+}
+
+function formatDateTime(ts: number): string {
+  const d = new Date(ts * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}${pad(d.getMinutes())}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,8 +374,6 @@ function Content() {
   // Conversion state
   const [converting, setConverting] = useState(false);
   const [conversionProgress, setConversionProgress] = useState<ConversionProgress | null>(null);
-  const [exportClip, setExportClip] = useState<VideoFile | null>(null);
-  const [exportName, setExportName] = useState("");
 
   // Clip filters
   const [clipGameFilter, setClipGameFilter] = useState("all");
@@ -428,7 +480,6 @@ function Content() {
         setConverting(progress.status === "started" || progress.status === "converting");
         if (progress.status === "complete") {
           refreshVideos();
-          setExportClip(null);
         }
       }
     );
@@ -519,18 +570,14 @@ function Content() {
   };
 
   // ── Clip handlers ─────────────────────────────────────────────────────────
-  const handlePrepareExport = (clip: VideoFile) => {
-    setExportClip(clip);
-    setExportName(gameName(clip.game_id) + " - " + (clip.clip_type === "video" ? "Recording" : "Clip"));
-    setConversionProgress(null);
-  };
-
-  const handleExportClip = async () => {
-    if (!exportClip) return;
-    const result = await convertSteamClip(exportClip.path, exportClip.game_id ?? "", exportName);
-    if (!result.success) {
-      toaster.toast({ title: "Export Error", body: result.error ?? "Failed to start export" });
-    }
+  const handleExportClip = (clip: VideoFile) => {
+    showModal(
+      <ExportModal
+        closeModal={() => {/* filled by showModal */}}
+        clip={clip}
+        gameName={gameName(clip.game_id)}
+      />
+    );
   };
 
   const handleDeleteClip = async (clip: VideoFile) => {
@@ -723,6 +770,21 @@ function Content() {
           />
         </PanelSection>
 
+        {converting && conversionProgress && (
+          <PanelSection title="Converting">
+            <PanelSectionRow>
+              <ProgressBarWithInfo
+                nProgress={conversionProgress.progress ?? 0}
+                sOperationText={
+                  conversionProgress.status === "complete" ? "Complete!" :
+                  conversionProgress.status === "error" ? "Error" : "Converting..."
+                }
+                sTimeRemaining={`${conversionProgress.progress ?? 0}%`}
+              />
+            </PanelSectionRow>
+          </PanelSection>
+        )}
+
         <PanelSection title={`Steam Clips (${filteredClips.length})`}>
           {filteredClips.length === 0 && !loading && (
             <PanelSectionRow>
@@ -754,64 +816,15 @@ function Content() {
                 </div>
               </PanelSectionRow>
 
-              {exportClip?.path === clip.path ? (
-                <>
-                  {!converting && conversionProgress?.status !== "complete" && (
-                    <>
-                      <PanelSectionRow>
-                        <TextField
-                          label="Export Name"
-                          value={exportName}
-                          onChange={(e) => setExportName(e.target.value)}
-                        />
-                      </PanelSectionRow>
-                      <PanelSectionRow>
-                        <ButtonItem layout="below" onClick={handleExportClip}>
-                          Start Export
-                        </ButtonItem>
-                      </PanelSectionRow>
-                      <PanelSectionRow>
-                        <ButtonItem layout="below" onClick={() => setExportClip(null)}>
-                          Cancel
-                        </ButtonItem>
-                      </PanelSectionRow>
-                    </>
-                  )}
-                  {converting && (
-                    <PanelSectionRow>
-                      <ProgressBarWithInfo
-                        nProgress={conversionProgress?.progress ?? 0}
-                        sOperationText="Converting..."
-                        sTimeRemaining={`${conversionProgress?.progress ?? 0}%`}
-                      />
-                    </PanelSectionRow>
-                  )}
-                  {conversionProgress?.status === "complete" && (
-                    <PanelSectionRow>
-                      <div style={{ fontSize: "12px", color: "#4CAF50" }}>
-                        Export complete!
-                      </div>
-                    </PanelSectionRow>
-                  )}
-                  {conversionProgress?.status === "error" && (
-                    <PanelSectionRow>
-                      <div style={{ fontSize: "12px", color: "#f44" }}>
-                        Error: {conversionProgress.error}
-                      </div>
-                    </PanelSectionRow>
-                  )}
-                </>
-              ) : (
-                <PanelSectionRow>
-                  <ButtonItem
-                    layout="below"
-                    onClick={() => handlePrepareExport(clip)}
-                    disabled={converting}
-                  >
-                    {converting ? "Converting..." : "Export to MP4"}
-                  </ButtonItem>
-                </PanelSectionRow>
-              )}
+              <PanelSectionRow>
+                <ButtonItem
+                  layout="below"
+                  onClick={() => handleExportClip(clip)}
+                  disabled={converting}
+                >
+                  {converting ? "Converting..." : "Export to MP4"}
+                </ButtonItem>
+              </PanelSectionRow>
 
               <PanelSectionRow>
                 <ButtonItem layout="below" onClick={() => handleDeleteClip(clip)} disabled={converting}>

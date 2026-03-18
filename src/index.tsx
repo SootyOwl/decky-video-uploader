@@ -3,6 +3,7 @@ import {
   ConfirmModal,
   DialogBody,
   DialogButton,
+  Focusable,
   PanelSection,
   PanelSectionRow,
   ProgressBarWithInfo,
@@ -203,7 +204,7 @@ function UploadModal({
         <div style={{ fontSize: "12px", color: "#ccc", marginTop: "12px", marginBottom: "8px" }}>
           Privacy
         </div>
-        <div style={{ display: "flex", gap: "8px" }}>
+        <Focusable style={{ display: "flex", gap: "8px" }}>
           {(["private", "unlisted", "public"] as const).map((opt) => (
             <DialogButton
               key={opt}
@@ -219,7 +220,7 @@ function UploadModal({
               {privacyLabels[opt]}
             </DialogButton>
           ))}
-        </div>
+        </Focusable>
       </DialogBody>
     </ConfirmModal>
   );
@@ -275,7 +276,7 @@ function ExportModal({
         <div style={{ fontSize: "10px", color: "#777", marginBottom: "8px" }}>
           Original quality is set in Steam &gt; Settings &gt; Game Recording
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+        <Focusable style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
           {QUALITY_OPTIONS.map((opt) => (
             <DialogButton
               key={opt.value}
@@ -294,7 +295,7 @@ function ExportModal({
               </span>
             </DialogButton>
           ))}
-        </div>
+        </Focusable>
       </DialogBody>
     </ConfirmModal>
   );

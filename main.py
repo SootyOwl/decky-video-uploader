@@ -735,6 +735,7 @@ class Plugin:
                 {"client_id": cid, "scope": YOUTUBE_SCOPE}
             ).encode()
             req = urllib.request.Request(YOUTUBE_DEVICE_CODE_URL, data=body, method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
             with urllib.request.urlopen(req, timeout=30, context=SSL_CTX) as resp:
                 data = json.loads(resp.read())
             self._auth_state = {
@@ -781,6 +782,7 @@ class Plugin:
                 }
             ).encode()
             req = urllib.request.Request(YOUTUBE_TOKEN_URL, data=body, method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
             with urllib.request.urlopen(req, timeout=30, context=SSL_CTX) as resp:
                 data = json.loads(resp.read())
             token = {
@@ -843,6 +845,7 @@ class Plugin:
                 }
             ).encode()
             req = urllib.request.Request(YOUTUBE_TOKEN_URL, data=body, method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
             with urllib.request.urlopen(req, timeout=30, context=SSL_CTX) as resp:
                 data = json.loads(resp.read())
             token["access_token"] = data["access_token"]

@@ -773,14 +773,15 @@ class Plugin:
             self._auth_state = {}
             return {"success": False, "error": "Auth flow expired. Please start again."}
         try:
-            body = urllib.parse.urlencode(
-                {
-                    "client_id": state["client_id"],
-                    "client_secret": state["client_secret"],
-                    "device_code": state["device_code"],
-                    "grant_type": "urn:ietf:params:oauth2:grant-type:device_code",
-                }
-            ).encode()
+            params = {
+                "client_id": state["client_id"],
+                "client_secret": state["client_secret"],
+                "device_code": state["device_code"],
+                "grant_type": "urn:ietf:params:oauth2:grant-type:device_code",
+            }
+            body = urllib.parse.urlencode(params).encode()
+            decky.logger.info(f"[poll_auth] POST {YOUTUBE_TOKEN_URL}")
+            decky.logger.info(f"[poll_auth] body={body!r}")
             req = urllib.request.Request(YOUTUBE_TOKEN_URL, data=body, method="POST")
             req.add_header("Content-Type", "application/x-www-form-urlencoded")
             with urllib.request.urlopen(req, timeout=30, context=SSL_CTX) as resp:
@@ -798,6 +799,7 @@ class Plugin:
             return {"success": True, "authenticated": True}
         except urllib.error.HTTPError as exc:
             err_body = exc.read().decode(errors="replace")
+            decky.logger.error(f"[poll_auth] HTTP {exc.code}: {err_body[:500]}")
             try:
                 err_data = json.loads(err_body)
                 code = err_data.get("error", "")
@@ -816,6 +818,7 @@ class Plugin:
                 pass
             return {"success": False, "error": f"HTTP {exc.code}: {err_body[:200]}"}
         except Exception as exc:
+            decky.logger.error(f"[poll_auth] Exception: {exc}")
             return {"success": False, "error": str(exc)}
 
     async def check_auth(self) -> dict:

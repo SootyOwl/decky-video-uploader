@@ -3,6 +3,7 @@ import {
   ConfirmModal,
   DialogBody,
   DropdownItem,
+  Focusable,
   PanelSection,
   PanelSectionRow,
   ProgressBarWithInfo,
@@ -318,7 +319,7 @@ function InlineSelect<T extends string>({
   const selected = options.find((o) => o.value === value);
 
   return (
-    <>
+    <Focusable>
       <PanelSectionRow>
         <ButtonItem
           layout="below"
@@ -350,7 +351,7 @@ function InlineSelect<T extends string>({
             </div>
           </PanelSectionRow>
         ))}
-    </>
+    </Focusable>
   );
 }
 

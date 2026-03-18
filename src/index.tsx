@@ -2,6 +2,7 @@ import {
   ButtonItem,
   ConfirmModal,
   DialogBody,
+  DialogButton,
   PanelSection,
   PanelSectionRow,
   ProgressBarWithInfo,
@@ -199,24 +200,24 @@ function UploadModal({
           value={tags}
           onChange={(e) => setTags(e.target.value)}
         />
-        <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+        <div style={{ fontSize: "12px", color: "#ccc", marginTop: "12px", marginBottom: "8px" }}>
+          Privacy
+        </div>
+        <div style={{ display: "flex", gap: "8px" }}>
           {(["private", "unlisted", "public"] as const).map((opt) => (
-            <button
+            <DialogButton
               key={opt}
               onClick={() => setPrivacy(opt)}
               style={{
                 flex: 1,
-                padding: "8px",
-                border: "none",
-                borderRadius: "4px",
+                minWidth: 0,
                 background: privacy === opt ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.05)",
                 color: privacy === opt ? "#fff" : "#aaa",
                 fontWeight: privacy === opt ? "bold" : "normal",
-                cursor: "pointer",
               }}
             >
               {privacyLabels[opt]}
-            </button>
+            </DialogButton>
           ))}
         </div>
       </DialogBody>
@@ -276,26 +277,22 @@ function ExportModal({
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
           {QUALITY_OPTIONS.map((opt) => (
-            <button
+            <DialogButton
               key={opt.value}
               onClick={() => setQuality(opt.value)}
               style={{
-                padding: "8px 12px",
-                border: "none",
-                borderRadius: "4px",
+                width: "100%",
+                textAlign: "left",
                 background: quality === opt.value ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.05)",
                 color: quality === opt.value ? "#fff" : "#aaa",
                 fontWeight: quality === opt.value ? "bold" : "normal",
-                cursor: "pointer",
-                textAlign: "left",
-                fontSize: "13px",
               }}
             >
               {opt.label}
               <span style={{ marginLeft: "8px", fontSize: "11px", color: "#777" }}>
                 {opt.description}
               </span>
-            </button>
+            </DialogButton>
           ))}
         </div>
       </DialogBody>

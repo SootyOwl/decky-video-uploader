@@ -20,7 +20,7 @@ import {
   toaster,
 } from "@decky/api";
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { FaYoutube } from "react-icons/fa";
+import { FaTrash, FaYoutube } from "react-icons/fa";
 
 // ---------------------------------------------------------------------------
 // Backend callables
@@ -842,30 +842,30 @@ function Content() {
                       fontWeight: "normal",
                     }}
                   >
-                    {clip.clip_type === "video" ? "Background" : "Manual Clip"}
+                    {clip.clip_type === "video" ? "Background" : "Clip"}
+                  </span>
+                  <span style={{ marginLeft: "8px", fontSize: "11px", color: "#aaa", fontWeight: "normal" }}>
+                    {formatSize(clip.size)} · {formatDate(clip.modified)}
                   </span>
                 </div>
               </PanelSectionRow>
               <PanelSectionRow>
-                <div style={{ fontSize: "11px", color: "#aaa" }}>
-                  {formatSize(clip.size)} · {formatDate(clip.modified)}
-                </div>
-              </PanelSectionRow>
-
-              <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  onClick={() => handleExportClip(clip)}
-                  disabled={converting}
-                >
-                  {converting ? "Converting..." : "Export to MP4"}
-                </ButtonItem>
-              </PanelSectionRow>
-
-              <PanelSectionRow>
-                <ButtonItem layout="below" onClick={() => handleDeleteClip(clip)} disabled={converting}>
-                  Delete Clip
-                </ButtonItem>
+                <Focusable style={{ display: "flex", gap: "8px" }}>
+                  <DialogButton
+                    onClick={() => handleExportClip(clip)}
+                    disabled={converting}
+                    style={{ flex: 1, minWidth: 0 }}
+                  >
+                    {converting ? "Converting..." : "Export to MP4"}
+                  </DialogButton>
+                  <DialogButton
+                    onClick={() => handleDeleteClip(clip)}
+                    disabled={converting}
+                    style={{ minWidth: 0, width: "auto", padding: "0 12px" }}
+                  >
+                    <FaTrash />
+                  </DialogButton>
+                </Focusable>
               </PanelSectionRow>
             </PanelSection>
           ))}
@@ -939,16 +939,9 @@ function Content() {
                 <div style={{ fontSize: "12px", fontWeight: "bold", wordBreak: "break-all" }}>
                   {video.name}
                 </div>
-              </PanelSectionRow>
-              <PanelSectionRow>
                 <div style={{ fontSize: "11px", color: "#aaa" }}>
-                  {video.game_id ? `${gameName(video.game_id)} · ` : ""}
+                  {video.subfolder ? `${video.subfolder} · ` : video.game_id ? `${gameName(video.game_id)} · ` : ""}
                   {formatSize(video.size)} · {video.ext.toUpperCase()}
-                </div>
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <div style={{ fontSize: "10px", color: "#777", wordBreak: "break-all" }}>
-                  {video.path}
                 </div>
               </PanelSectionRow>
               {video.needs_conversion && (
@@ -963,14 +956,20 @@ function Content() {
                 </PanelSectionRow>
               )}
               <PanelSectionRow>
-                <ButtonItem layout="below" onClick={() => handleSelectForUpload(video)}>
-                  Upload to YouTube
-                </ButtonItem>
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <ButtonItem layout="below" onClick={() => handleDeleteVideo(video)}>
-                  Delete
-                </ButtonItem>
+                <Focusable style={{ display: "flex", gap: "8px" }}>
+                  <DialogButton
+                    onClick={() => handleSelectForUpload(video)}
+                    style={{ flex: 1, minWidth: 0 }}
+                  >
+                    Upload
+                  </DialogButton>
+                  <DialogButton
+                    onClick={() => handleDeleteVideo(video)}
+                    style={{ minWidth: 0, width: "auto", padding: "0 12px" }}
+                  >
+                    <FaTrash />
+                  </DialogButton>
+                </Focusable>
               </PanelSectionRow>
             </PanelSection>
           ))}

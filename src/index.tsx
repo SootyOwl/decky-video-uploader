@@ -386,6 +386,10 @@ function Content() {
   // Exported video filters
   const [videoGameFilter, setVideoGameFilter] = useState("all");
 
+  // Sort
+  const [clipSort, setClipSort] = useState<"date" | "size">("date");
+  const [videoSort, setVideoSort] = useState<"date" | "size">("date");
+
   // ── Derived data ──────────────────────────────────────────────────────────
   const steamClips = useMemo(() => videos.filter((v) => v.is_steam_clip), [videos]);
   const exportedVideos = useMemo(() => videos.filter((v) => !v.is_steam_clip), [videos]);
@@ -409,20 +413,28 @@ function Content() {
 
   const filteredClips = useMemo(
     () =>
-      steamClips.filter(
-        (c) =>
-          (clipGameFilter === "all" || c.game_id === clipGameFilter) &&
-          (clipTypeFilter === "all" || c.clip_type === clipTypeFilter)
-      ),
-    [steamClips, clipGameFilter, clipTypeFilter]
+      steamClips
+        .filter(
+          (c) =>
+            (clipGameFilter === "all" || c.game_id === clipGameFilter) &&
+            (clipTypeFilter === "all" || c.clip_type === clipTypeFilter)
+        )
+        .sort((a, b) =>
+          clipSort === "size" ? b.size - a.size : b.modified - a.modified
+        ),
+    [steamClips, clipGameFilter, clipTypeFilter, clipSort]
   );
 
   const filteredExportedVideos = useMemo(
     () =>
-      exportedVideos.filter(
-        (v) => videoGameFilter === "all" || v.game_id === videoGameFilter
-      ),
-    [exportedVideos, videoGameFilter]
+      exportedVideos
+        .filter(
+          (v) => videoGameFilter === "all" || v.game_id === videoGameFilter
+        )
+        .sort((a, b) =>
+          videoSort === "size" ? b.size - a.size : b.modified - a.modified
+        ),
+    [exportedVideos, videoGameFilter, videoSort]
   );
 
   // ── Game name helper ──────────────────────────────────────────────────────
@@ -772,6 +784,15 @@ function Content() {
             options={typeOptions.map((v) => ({ value: v, label: typeLabel[v] }))}
             onChange={(v) => setClipTypeFilter(v)}
           />
+          <InlineSelect
+            label="Sort"
+            value={clipSort}
+            options={[
+              { value: "date" as const, label: "Date" },
+              { value: "size" as const, label: "File Size" },
+            ]}
+            onChange={(v) => setClipSort(v)}
+          />
         </PanelSection>
 
         {converting && conversionProgress && (
@@ -859,8 +880,8 @@ function Content() {
           </PanelSectionRow>
         </PanelSection>
 
-        {uniqueVideoGameIds.length > 1 && (
-          <PanelSection title="Filter">
+        <PanelSection title="Filter">
+          {uniqueVideoGameIds.length > 1 && (
             <InlineSelect
               label="Game"
               value={videoGameFilter}
@@ -870,8 +891,17 @@ function Content() {
               }))}
               onChange={(v) => setVideoGameFilter(v)}
             />
-          </PanelSection>
-        )}
+          )}
+          <InlineSelect
+            label="Sort"
+            value={videoSort}
+            options={[
+              { value: "date" as const, label: "Date" },
+              { value: "size" as const, label: "File Size" },
+            ]}
+            onChange={(v) => setVideoSort(v)}
+          />
+        </PanelSection>
 
         <PanelSection title={`Exported Videos (${filteredExportedVideos.length})`}>
           {filteredExportedVideos.length === 0 && !loading && (

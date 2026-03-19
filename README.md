@@ -15,7 +15,7 @@ A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin for S
 
 ### From the Decky Plugin Store
 
-Search for **Video Uploader** in the Decky plugin store and install.
+Coming soon!
 
 ### Manual install
 

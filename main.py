@@ -14,19 +14,14 @@ import urllib.error
 
 import decky
 
-# ---------------------------------------------------------------------------
-# SSL context — Steam Deck (Arch-based) may ship a Python that cannot find
-# the system CA bundle automatically.  We try several common locations so
-# that urllib / http.client HTTPS calls succeed without disabling verification.
-# ---------------------------------------------------------------------------
+# SteamOS Python sometimes can't find the system CA bundle on its own,
+# so we probe a few well-known paths.
 def _make_ssl_context() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
-    # If the default context already has CA certs loaded, just use it.
     try:
         ctx.load_default_locations()
     except Exception:
         pass
-    # Probe well-known CA bundle paths (Arch, Fedora, Debian, Alpine, etc.)
     _CA_PATHS = [
         "/etc/ssl/certs/ca-certificates.crt",
         "/etc/pki/tls/certs/ca-bundle.crt",
@@ -45,7 +40,6 @@ def _make_ssl_context() -> ssl.SSLContext:
                 return ctx
         except Exception:
             continue
-    # Last resort: try certifi if installed
     try:
         import certifi
         ctx.load_verify_locations(cafile=certifi.where())
@@ -56,38 +50,26 @@ def _make_ssl_context() -> ssl.SSLContext:
 
 SSL_CTX = _make_ssl_context()
 
-# ---------------------------------------------------------------------------
-# YouTube API constants
-# ---------------------------------------------------------------------------
 YOUTUBE_DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code"
 YOUTUBE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 
-# Default OAuth2 credentials (TV & Limited Input device client).
-# Replace these with your own values from the Google Cloud Console.
-# For device-flow clients the secret is not truly confidential — Google
-# documents that it may be embedded in distributed applications.
+# Default device-flow OAuth2 credentials. The secret is not confidential
+# for this client type per Google's documentation.
 DEFAULT_CLIENT_ID = "267858990226-t964tp8m6oina39elk8obk2fq0h8sdar.apps.googleusercontent.com"
 DEFAULT_CLIENT_SECRET = "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"
 
-# Supported video file extensions
 VIDEO_EXTENSIONS = frozenset([".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".ts"])
-
-# Chunk size for YouTube resumable uploads (8 MB must be a multiple of 256 KB)
-UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # must be multiple of 256 KB
 
 
 class Plugin:
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     async def _main(self):
         self._auth_state: dict = {}
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         decky.logger.info("Video Uploader plugin loaded")
-        self._videos_dir()  # ensure ~/Videos/ exists
+        self._videos_dir()
 
     async def _unload(self):
         decky.logger.info("Video Uploader plugin unloaded")
@@ -98,20 +80,9 @@ class Plugin:
     async def _migration(self):
         pass
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _videos_dir(self, game_subfolder: str = "") -> str:
-        """Output directory for exported / converted videos.
-
-        If *game_subfolder* is provided **and** the ``use_game_subfolders``
-        setting is enabled the video is written under ``~/Videos/<subfolder>/``.
-        """
         base = os.path.join(decky.DECKY_USER_HOME, "Videos")
         if game_subfolder and self._load_settings().get("use_game_subfolders", True):
-            # Strip control chars, replace reserved path characters, strip
-            # again after truncating so the name never ends with a space/dot
             cleaned = "".join(c for c in game_subfolder if ord(c) >= 32)
             safe_name = re.sub(r'[<>:"/\\|?*]', "_", cleaned).strip(" .")[:64].strip(" .")
             if safe_name:
@@ -140,11 +111,9 @@ class Plugin:
         return {"use_game_subfolders": True}
 
     async def get_settings(self) -> dict:
-        """Return plugin settings."""
         return self._load_settings()
 
     async def save_settings(self, settings: dict) -> dict:
-        """Persist plugin settings."""
         try:
             with open(self._settings_path(), "w") as fh:
                 json.dump(settings, fh)
@@ -152,13 +121,8 @@ class Plugin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    # ------------------------------------------------------------------
-    # Video discovery
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _read_acf_name(path: str):
-        """Return the game name from a Steam appmanifest_*.acf file, or None."""
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as fh:
                 for line in fh:
@@ -170,7 +134,6 @@ class Plugin:
         return None
 
     async def get_game_names(self) -> dict:
-        """Return a mapping of app_id (string) → game name from local appmanifest files."""
         user_home = decky.DECKY_USER_HOME
         names: dict = {}
         steamapps_dirs = [
@@ -197,7 +160,6 @@ class Plugin:
         return names
 
     def _get_custom_record_path(self, userdata_dir: str):
-        """Read a custom Steam recording path from localconfig.vdf, if set."""
         localconfig = os.path.join(userdata_dir, "config", "localconfig.vdf")
         if not os.path.isfile(localconfig):
             return None
@@ -216,11 +178,7 @@ class Plugin:
 
     @staticmethod
     def _parse_clip_game_id(folder_name: str) -> str:
-        """Extract the Steam App ID from a recording folder name (best-effort).
-
-        Steam recording folder names follow the pattern:
-        ``{prefix}_{appid}_{YYYYMMDD}_{HHMMSS}``
-        """
+        """Extract app ID from folder name like {prefix}_{appid}_{date}_{time}."""
         parts = folder_name.split("_")
         if len(parts) >= 2 and parts[1].isdigit():
             return parts[1]
@@ -229,7 +187,6 @@ class Plugin:
         return "unknown"
 
     def _steam_userdata_bases(self) -> list:
-        """Return all candidate Steam userdata directory bases (deduplicated)."""
         user_home = decky.DECKY_USER_HOME
         candidates = [
             os.path.join(user_home, ".local", "share", "Steam", "userdata"),
@@ -251,11 +208,7 @@ class Plugin:
         return result
 
     def _discover_steam_clips(self) -> list:
-        """Return clip-folder entries for Steam's internal MPEG-DASH game recordings.
-
-        Each entry has ``is_steam_clip=True`` and ``needs_conversion=True``.
-        The *path* field is the clip folder (a directory, not a file).
-        """
+        """Find unexported Steam MPEG-DASH game recordings."""
         user_home = decky.DECKY_USER_HOME
         clips: list = []
 
@@ -283,9 +236,7 @@ class Plugin:
                                     if not clip_entry.is_dir():
                                         continue
                                     clip_folder = clip_entry.path
-                                    # Recursively search for session.mpd (matches
-                                    # SteamClip's approach -- manual clips may nest
-                                    # session data at varying depths).
+                                    # Manual clips may nest session data at varying depths
                                     has_mpd = any(
                                         "session.mpd" in files
                                         for _root, _dirs, files in os.walk(clip_folder)
@@ -324,8 +275,6 @@ class Plugin:
         return clips
 
     async def get_video_files(self) -> list:
-        """Return a list of video files found in Steam / user video directories,
-        including unexported Steam game recording clips."""
         user_home = decky.DECKY_USER_HOME
         search_roots: list = [os.path.join(user_home, "Videos")]
 
@@ -355,15 +304,12 @@ class Plugin:
                         fpath = os.path.join(dirpath, fname)
                         try:
                             st = os.stat(fpath)
-                            # Extract game App ID from Steam 760/remote/<appid>/... paths
-                            # using a regex match on the normalised path
                             game_id = ""
                             m = re.search(
                                 r"[/\\]760[/\\]remote[/\\](\d+)[/\\]", fpath
                             )
                             if m:
                                 game_id = m.group(1)
-                            # Subfolder relative to search root (empty if at root)
                             rel = os.path.relpath(dirpath, root)
                             subfolder = "" if rel == "." else rel.split(os.sep)[0]
                             videos.append(
@@ -384,41 +330,30 @@ class Plugin:
             except PermissionError:
                 pass
 
-        # Include unexported Steam game recording clips
         videos.extend(self._discover_steam_clips())
 
         videos.sort(key=lambda v: v["modified"], reverse=True)
         return videos
 
-    # ------------------------------------------------------------------
-    # MP4 conversion (runs as a background asyncio task)
-    # ------------------------------------------------------------------
-
-    # Quality presets: name → (crf, preset)
+    # (crf, preset) tuples
     QUALITY_PRESETS: dict = {
         "medium": ("22", "fast"),
         "high":   ("18", "medium"),
     }
 
     async def convert_to_mp4(self, source_path: str, game_id: str = "", output_name: str = "", quality: str = "medium") -> dict:
-        """Convert a video to H.264/AAC MP4 using ffmpeg.
-
-        Returns immediately; emits *conversion_progress* events when done.
-        """
         if not os.path.isfile(source_path):
             return {"success": False, "error": "Source file not found"}
-        # Resolve game name for subfolder (best-effort from game_id or source path)
         game_name = ""
         if game_id and game_id.isdigit():
             names = await self.get_game_names()
             game_name = names.get(game_id, game_id)
         crf, preset = self.QUALITY_PRESETS.get(quality, self.QUALITY_PRESETS["medium"])
-        asyncio.get_event_loop().create_task(self._run_conversion(source_path, game_name, output_name, crf, preset))
+        asyncio.get_running_loop().create_task(self._run_conversion(source_path, game_name, output_name, crf, preset))
         return {"success": True, "started": True}
 
     @staticmethod
     async def _get_duration(source_path: str) -> float:
-        """Get duration in seconds using ffprobe.  Returns 0 on failure."""
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffprobe", "-v", "quiet",
@@ -438,7 +373,6 @@ class Plugin:
     async def _run_conversion(self, source_path: str, game_name: str = "", output_name: str = "", crf: str = "22", preset: str = "fast") -> None:
         out_dir = self._videos_dir(game_name)
         base = output_name.strip() if output_name.strip() else os.path.splitext(os.path.basename(source_path))[0]
-        # Sanitise user-provided name
         base = re.sub(r'[<>:"/\\|?*]', "_", base).strip(" .")[:128].strip(" .")
         output_path = os.path.join(out_dir, f"{base}.mp4")
         counter = 1
@@ -472,7 +406,6 @@ class Plugin:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            # Parse progress from stdout (machine-readable key=value lines)
             await self._read_ffmpeg_progress(proc, duration)
             await proc.wait()
             if proc.returncode == 0:
@@ -501,7 +434,6 @@ class Plugin:
             await decky.emit("conversion_progress", {"status": "error", "error": str(exc)})
 
     async def _read_ffmpeg_progress(self, proc: asyncio.subprocess.Process, duration: float) -> None:
-        """Read ffmpeg -progress pipe:1 output and emit progress events."""
         last_pct = -1
         assert proc.stdout is not None
         while True:
@@ -522,17 +454,7 @@ class Plugin:
                 except (ValueError, ZeroDivisionError):
                     pass
 
-    # ------------------------------------------------------------------
-    # Steam clip conversion (m4s MPEG-DASH → MP4)
-    # ------------------------------------------------------------------
-
     async def convert_steam_clip(self, clip_folder: str, game_id: str = "", output_name: str = "", quality: str = "copy") -> dict:
-        """Convert a Steam internal MPEG-DASH game recording to MP4.
-
-        *clip_folder* must be a directory containing a ``session.mpd`` file.
-        *quality* can be "copy" (fast remux) or a preset name for re-encoding.
-        Returns immediately; emits *conversion_progress* events when done.
-        """
         if not os.path.isdir(clip_folder):
             return {"success": False, "error": "Clip folder not found"}
         # Look up game name for subfolder
@@ -540,24 +462,16 @@ class Plugin:
         if game_id and game_id.isdigit():
             names = await self.get_game_names()
             game_name = names.get(game_id, game_id)
-        asyncio.get_event_loop().create_task(
+        asyncio.get_running_loop().create_task(
             self._run_steam_clip_conversion(clip_folder, game_name, output_name, quality)
         )
         return {"success": True, "started": True}
 
     async def delete_steam_clip(self, clip_folder: str) -> dict:
-        """Delete a Steam game recording clip folder.
-
-        Safety checks:
-        - The normalised path must be a directory.
-        - It must sit inside a known Steam userdata/gamerecordings tree so that
-          a malicious path like ``/tmp/gamerecordings/../important`` is rejected.
-        """
         safe_path = os.path.normpath(clip_folder)
         if not os.path.isdir(safe_path):
             return {"success": False, "error": "Clip folder not found"}
 
-        user_home = decky.DECKY_USER_HOME
         allowed_bases = [
             os.path.normpath(b) for b in self._steam_userdata_bases()
         ]
@@ -573,11 +487,6 @@ class Plugin:
             return {"success": False, "error": str(exc)}
 
     async def delete_video(self, filepath: str) -> dict:
-        """Delete an exported video file.
-
-        Safety check: the file must be under the user's home directory and
-        must not be a directory.
-        """
         safe_path = os.path.realpath(os.path.normpath(filepath))
         user_home = os.path.realpath(os.path.normpath(decky.DECKY_USER_HOME))
         if not safe_path.startswith(user_home + os.sep):
@@ -586,9 +495,7 @@ class Plugin:
             return {"success": False, "error": "File not found"}
         try:
             os.unlink(safe_path)
-            # Atomically remove parent dir if it's an empty game subfolder.
-            # Skip the listdir check to avoid a TOCTOU race — os.rmdir already
-            # fails atomically with ENOTEMPTY if the directory is not empty.
+            # Clean up empty game subfolder (rmdir is atomic, fails if not empty)
             parent = os.path.dirname(safe_path)
             videos_base = os.path.join(user_home, "Videos")
             if parent != videos_base:
@@ -601,7 +508,6 @@ class Plugin:
             return {"success": False, "error": str(exc)}
 
     async def _ffmpeg_concat(self, file_list: list, is_video: bool) -> str:
-        """Concatenate multiple MP4 segments with ffmpeg; returns path to output file."""
         list_tmp = tempfile.NamedTemporaryFile(
             delete=False, mode="w", suffix=".txt"
         )
@@ -650,7 +556,6 @@ class Plugin:
         await decky.emit("conversion_progress", {"status": "started", "source": clip_folder, "progress": 0})
         temp_files: list = []
         try:
-            # Find all session directories (one per recording segment)
             session_dirs = sorted(
                 root
                 for root, _dirs, files in os.walk(clip_folder)
@@ -675,7 +580,6 @@ class Plugin:
                     )
                     continue
 
-                # Binary-concatenate init segment + chunk segments into one temp mp4
                 with tempfile.NamedTemporaryFile(
                     delete=False, suffix=".mp4"
                 ) as tmp_v:
@@ -711,7 +615,6 @@ class Plugin:
                 )
                 return
 
-            # If multiple recording sessions, concatenate across sessions
             if len(temp_videos) > 1:
                 final_video = await self._ffmpeg_concat(temp_videos, is_video=True)
                 final_audio = await self._ffmpeg_concat(temp_audios, is_video=False)
@@ -720,7 +623,6 @@ class Plugin:
                 final_video = temp_videos[0]
                 final_audio = temp_audios[0]
 
-            # Merge video + audio streams into the output mp4
             duration = await self._get_duration(final_video)
             if quality == "copy" or quality not in self.QUALITY_PRESETS:
                 merge_args = ["-c", "copy"]
@@ -777,12 +679,7 @@ class Plugin:
                 except OSError:
                     pass
 
-    # ------------------------------------------------------------------
-    # Credentials
-    # ------------------------------------------------------------------
-
     async def save_credentials(self, client_id: str, client_secret: str) -> dict:
-        """Persist YouTube OAuth2 client credentials to disk."""
         try:
             with open(self._creds_path(), "w") as fh:
                 json.dump({"client_id": client_id, "client_secret": client_secret}, fh)
@@ -791,7 +688,6 @@ class Plugin:
             return {"success": False, "error": str(exc)}
 
     async def get_credentials(self) -> dict:
-        """Return saved client credentials (empty dict if none saved)."""
         try:
             if os.path.isfile(self._creds_path()):
                 with open(self._creds_path()) as fh:
@@ -800,19 +696,8 @@ class Plugin:
             pass
         return {}
 
-    # ------------------------------------------------------------------
-    # YouTube OAuth2 – device-code flow
-    # ------------------------------------------------------------------
-
     async def start_auth(self, client_id: str = "", client_secret: str = "") -> dict:
-        """Initiate the YouTube OAuth2 device-code flow.
-
-        *client_id* and *client_secret* are optional — when empty the
-        built-in default credentials are used so that end-users don't
-        need their own Google Cloud project.
-
-        Returns the *user_code* and *verification_url* that the user must visit.
-        """
+        """Start YouTube device-code auth flow. Empty credentials use built-in defaults."""
         try:
             cid = client_id or DEFAULT_CLIENT_ID
             csecret = client_secret or DEFAULT_CLIENT_SECRET
@@ -845,12 +730,6 @@ class Plugin:
             return {"success": False, "error": str(exc)}
 
     async def poll_auth(self) -> dict:
-        """Poll the token endpoint to check whether the user has authorised.
-
-        Call this every *interval* seconds while waiting for the user.
-        Returns ``{'authenticated': True}`` on success or
-        ``{'pending': True}`` while still waiting.
-        """
         if not self._auth_state:
             return {"success": False, "error": "No auth flow in progress"}
         state = self._auth_state
@@ -904,7 +783,6 @@ class Plugin:
             return {"success": False, "error": str(exc)}
 
     async def check_auth(self) -> dict:
-        """Return whether the plugin currently holds valid YouTube credentials."""
         if not os.path.isfile(self._token_path()):
             return {"authenticated": False}
         try:
@@ -944,7 +822,6 @@ class Plugin:
             return False
 
     async def revoke_auth(self) -> dict:
-        """Revoke the stored YouTube token and delete it from disk."""
         if not os.path.isfile(self._token_path()):
             return {"success": True}
         try:
@@ -966,10 +843,6 @@ class Plugin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    # ------------------------------------------------------------------
-    # YouTube upload (background task + chunked resumable upload)
-    # ------------------------------------------------------------------
-
     async def upload_to_youtube(
         self,
         filepath: str,
@@ -978,13 +851,9 @@ class Plugin:
         tags: str,
         privacy: str,
     ) -> dict:
-        """Start a background YouTube upload task.
-
-        Returns immediately; emits *upload_progress* events while running.
-        """
         if not os.path.isfile(filepath):
             return {"success": False, "error": "File not found"}
-        asyncio.get_event_loop().create_task(
+        asyncio.get_running_loop().create_task(
             self._run_upload(filepath, title, description, tags, privacy)
         )
         return {"success": True, "started": True}
@@ -1000,7 +869,6 @@ class Plugin:
         try:
             await decky.emit("upload_progress", {"progress": 0, "status": "starting"})
 
-            # Load token
             if not os.path.isfile(self._token_path()):
                 await decky.emit(
                     "upload_progress",
@@ -1025,7 +893,6 @@ class Plugin:
                 [t.strip() for t in tags.split(",") if t.strip()] if tags else []
             )
 
-            # Initiate resumable upload session
             meta = json.dumps(
                 {
                     "snippet": {
@@ -1061,8 +928,7 @@ class Plugin:
 
             await decky.emit("upload_progress", {"progress": 0, "status": "uploading"})
 
-            # Upload chunks in a thread so we don't block the event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 None,
                 self._sync_upload_chunks,
@@ -1086,11 +952,7 @@ class Plugin:
         file_size: int,
         loop: asyncio.AbstractEventLoop,
     ) -> dict:
-        """Upload the file in 8 MB chunks using YouTube's resumable upload protocol.
-
-        Must run in a thread (called via run_in_executor) because it uses
-        blocking I/O.  Progress events are posted back to *loop*.
-        """
+        """Chunked resumable upload, runs in a thread via run_in_executor."""
         chunk_size = UPLOAD_CHUNK_SIZE
         bytes_uploaded = 0
         parsed = urllib.parse.urlparse(upload_url)
@@ -1126,12 +988,11 @@ class Plugin:
                         }
                     elif status == 308:
                         range_hdr = resp.getheader("Range", "")
-                        resp.read()  # consume response body
+                        resp.read()
                         if range_hdr:
                             bytes_uploaded = int(range_hdr.split("-")[1]) + 1
                         else:
                             bytes_uploaded += len(chunk)
-                        # Emit progress back on the event loop
                         progress = int(bytes_uploaded / file_size * 100)
                         asyncio.run_coroutine_threadsafe(
                             decky.emit(

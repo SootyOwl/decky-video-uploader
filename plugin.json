@@ -1,7 +1,7 @@
 {
   "name": "Video Uploader",
   "author": "SootyOwl",
-  "flags": ["debug", "_root"],
+  "flags": ["_root"],
   "api_version": 1,
   "publish": {
     "tags": ["video", "youtube", "upload", "export", "root"],

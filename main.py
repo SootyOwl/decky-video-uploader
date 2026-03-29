@@ -341,15 +341,24 @@ class Plugin:
         "high":   ("18", "medium"),
     }
 
-    # Slider value (0–4) → (crf, preset).  CRF is constant so visual quality
-    # stays the same; only the preset varies, trading encode speed for file size.
-    EXPORT_SLIDER: list = [
-        ("20", "ultrafast"),   # 0 – Fastest
-        ("20", "veryfast"),    # 1
-        ("20", "fast"),        # 2 – Balanced (default)
-        ("20", "medium"),      # 3
-        ("20", "slow"),        # 4 – Smallest
-    ]
+    # Speed slider (0–4) → ffmpeg preset.  Higher = slower but smaller files.
+    SPEED_PRESETS: list = ["ultrafast", "veryfast", "fast", "medium", "slow"]
+
+    # Quality slider (0–4) → CRF value.  Higher = better quality, larger files.
+    QUALITY_CRF: list = ["28", "24", "20", "18", "16"]
+
+    def _resolve_quality(self, quality: str) -> tuple[str, str]:
+        """Parse a quality string into (crf, preset).
+
+        Accepts 'slider:<speed>:<quality>', legacy 'slider:<speed>',
+        or named presets like 'medium'/'high'.
+        """
+        if quality.startswith("slider:"):
+            parts = quality.split(":")
+            speed_idx = max(0, min(int(parts[1]), len(self.SPEED_PRESETS) - 1))
+            quality_idx = max(0, min(int(parts[2]), len(self.QUALITY_CRF) - 1)) if len(parts) > 2 else 2
+            return (self.QUALITY_CRF[quality_idx], self.SPEED_PRESETS[speed_idx])
+        return self.QUALITY_PRESETS.get(quality, self.QUALITY_PRESETS["medium"])
 
     async def convert_to_mp4(self, source_path: str, game_id: str = "", output_name: str = "", quality: str = "medium") -> dict:
         if not os.path.isfile(source_path):
@@ -358,11 +367,7 @@ class Plugin:
         if game_id and game_id.isdigit():
             names = await self.get_game_names()
             game_name = names.get(game_id, game_id)
-        if quality.startswith("slider:"):
-            idx = max(0, min(int(quality.split(":", 1)[1]), len(self.EXPORT_SLIDER) - 1))
-            crf, preset = self.EXPORT_SLIDER[idx]
-        else:
-            crf, preset = self.QUALITY_PRESETS.get(quality, self.QUALITY_PRESETS["medium"])
+        crf, preset = self._resolve_quality(quality)
         asyncio.get_running_loop().create_task(self._run_conversion(source_path, game_name, output_name, crf, preset))
         return {"success": True, "started": True}
 
@@ -705,28 +710,14 @@ class Plugin:
             # Detect 16:10 source (Steam Deck) and build crop filter for 16:9
             width, height = await self._get_video_dimensions(final_video)
             crop_filter = self._build_crop_filter(width, height)
-            if quality == "copy" and not crop_filter:
-                merge_args = ["-c", "copy"]
-            else:
-                # Use slider value if provided (e.g. "slider:2"), otherwise
-                # fall back to named presets or default balanced settings.
-                if quality.startswith("slider:"):
-                    idx = max(0, min(int(quality.split(":", 1)[1]), len(self.EXPORT_SLIDER) - 1))
-                    crf, preset = self.EXPORT_SLIDER[idx]
-                elif quality == "copy":
-                    # copy was requested but crop is needed — use balanced default
-                    crf, preset = self.EXPORT_SLIDER[2]
-                elif quality in self.QUALITY_PRESETS:
-                    crf, preset = self.QUALITY_PRESETS[quality]
-                else:
-                    crf, preset = self.EXPORT_SLIDER[2]
-                vf_args = ["-vf", crop_filter] if crop_filter else []
-                merge_args = [
-                    *vf_args,
-                    "-c:v", "libx264", "-preset", preset, "-crf", crf,
-                    "-c:a", "aac", "-b:a", "128k",
-                    "-movflags", "+faststart",
-                ]
+            crf, preset = self._resolve_quality(quality)
+            vf_args = ["-vf", crop_filter] if crop_filter else []
+            merge_args = [
+                *vf_args,
+                "-c:v", "libx264", "-preset", preset, "-crf", crf,
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+            ]
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-y",
                 "-i", final_video,

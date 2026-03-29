@@ -123,12 +123,20 @@ interface ConversionProgress {
 
 type View = "list" | "clips" | "videos" | "settings";
 
-const EXPORT_SLIDER_LABELS = [
+const SPEED_SLIDER_LABELS = [
   { notchIndex: 0, label: "Fastest", value: 0 },
   { notchIndex: 1, label: "", value: 1 },
   { notchIndex: 2, label: "Balanced", value: 2 },
   { notchIndex: 3, label: "", value: 3 },
   { notchIndex: 4, label: "Smallest", value: 4 },
+] as const;
+
+const QUALITY_SLIDER_LABELS = [
+  { notchIndex: 0, label: "Low", value: 0 },
+  { notchIndex: 1, label: "", value: 1 },
+  { notchIndex: 2, label: "Good", value: 2 },
+  { notchIndex: 3, label: "", value: 3 },
+  { notchIndex: 4, label: "Best", value: 4 },
 ] as const;
 
 const PRIVACY_OPTIONS = [
@@ -232,7 +240,8 @@ function ExportModal({
 }) {
   const defaultName = `${gName} - ${clip.clip_type === "video" ? "Recording" : "Clip"} ${formatDateTime(clip.modified)}`;
   const [name, setName] = useState(defaultName);
-  const [sliderValue, setSliderValue] = useState(2);
+  const [speed, setSpeed] = useState(2);
+  const [quality, setQuality] = useState(2);
 
   return (
     <ConfirmModal
@@ -240,7 +249,7 @@ function ExportModal({
       strOKButtonText="Export"
       strCancelButtonText="Cancel"
       onOK={() => {
-        convertSteamClip(clip.path, clip.game_id ?? "", name, `slider:${sliderValue}`).then((result) => {
+        convertSteamClip(clip.path, clip.game_id ?? "", name, `slider:${speed}:${quality}`).then((result) => {
           if (result.success) {
             toaster.toast({ title: "Export Started", body: `Exporting "${name}"...` });
           } else {
@@ -263,16 +272,28 @@ function ExportModal({
           onChange={(e) => setName(e.target.value)}
         />
         <SliderField
-          label="Export Speed"
-          description="Faster export = larger file size"
-          value={sliderValue}
+          label="Quality"
+          description="Higher quality = larger file size"
+          value={quality}
           min={0}
           max={4}
           step={1}
           notchCount={5}
-          notchLabels={EXPORT_SLIDER_LABELS as any}
+          notchLabels={QUALITY_SLIDER_LABELS as any}
           notchTicksVisible={true}
-          onChange={setSliderValue}
+          onChange={setQuality}
+        />
+        <SliderField
+          label="Export Speed"
+          description="Slower export = smaller file size"
+          value={speed}
+          min={0}
+          max={4}
+          step={1}
+          notchCount={5}
+          notchLabels={SPEED_SLIDER_LABELS as any}
+          notchTicksVisible={true}
+          onChange={setSpeed}
         />
       </DialogBody>
     </ConfirmModal>

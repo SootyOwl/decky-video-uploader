@@ -23,9 +23,6 @@ import {
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { FaSyncAlt, FaTrash, FaYoutube } from "react-icons/fa";
 
-// ---------------------------------------------------------------------------
-// Backend callables
-// ---------------------------------------------------------------------------
 const getVideoFiles = callable<[], VideoFile[]>("get_video_files");
 const getGameNames = callable<[], Record<string, string>>("get_game_names");
 const getSettings = callable<[], PluginSettings>("get_settings");
@@ -59,9 +56,6 @@ const uploadToYoutube = callable<
   CallResult
 >("upload_to_youtube");
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 interface VideoFile {
   path: string;
   name: string;
@@ -156,13 +150,6 @@ const ICON_BUTTON_STYLE = {
   justifyContent: "center",
 } as const;
 
-// ---------------------------------------------------------------------------
-// UploadModal — full-screen modal for YouTube upload form.
-//
-// Opens over everything (including the QAM panel) so the on-screen keyboard
-// doesn't overlap any fields.  The upload itself runs in the background after
-// the modal closes — progress / completion is reported via toast notifications.
-// ---------------------------------------------------------------------------
 function UploadModal({
   closeModal,
   video,
@@ -231,9 +218,6 @@ function UploadModal({
   );
 }
 
-// ---------------------------------------------------------------------------
-// ExportModal — full-screen modal for naming a clip before MP4 export.
-// ---------------------------------------------------------------------------
 function ExportModal({
   closeModal,
   clip,
@@ -290,9 +274,6 @@ function ExportModal({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1_048_576) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -310,14 +291,8 @@ function formatDateTime(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}${pad(d.getMinutes())}`;
 }
 
-// ---------------------------------------------------------------------------
-// InlineSelect — a non-modal dropdown that stays inside the panel.
-//
-// Steam's built-in DropdownItem always opens a full-screen native modal and
-// closes the panel when an option is selected — that is by design in the
-// Steam QAM UI and cannot be overridden via any prop.  InlineSelect renders
-// an inline option list using plain ButtonItems so no navigation occurs.
-// ---------------------------------------------------------------------------
+// Steam's DropdownItem opens a full-screen modal and closes the QAM panel,
+// so we use a simple inline option list instead.
 interface SelectOption<T extends string> {
   value: T;
   label: string;
@@ -374,9 +349,6 @@ function InlineSelect<T extends string>({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Content component
-// ---------------------------------------------------------------------------
 function Content() {
   const [view, setView] = useState<View>("list");
   const [videos, setVideos] = useState<VideoFile[]>([]);
@@ -410,7 +382,6 @@ function Content() {
   const [clipSort, setClipSort] = useState<"date" | "size">("date");
   const [videoSort, setVideoSort] = useState<"date" | "size">("date");
 
-  // ── Derived data ──────────────────────────────────────────────────────────
   const steamClips = useMemo(() => videos.filter((v) => v.is_steam_clip), [videos]);
   const exportedVideos = useMemo(() => videos.filter((v) => !v.is_steam_clip), [videos]);
 
@@ -470,7 +441,6 @@ function Content() {
     [exportedVideos, videoGameFilter, videoSort, videoGroupKey]
   );
 
-  // ── Game name helper ──────────────────────────────────────────────────────
   const gameName = useCallback(
     (gameId: string | undefined): string => {
       if (!gameId || gameId === "unknown" || gameId === "") return "Unknown Game";
@@ -479,7 +449,6 @@ function Content() {
     [gameNames]
   );
 
-  // ── Loaders ──────────────────────────────────────────────────────────────
   const refreshVideos = useCallback(async () => {
     setLoading(true);
     const [filesResult, namesResult] = await Promise.allSettled([
@@ -519,7 +488,6 @@ function Content() {
     getSettings().then((s) => setPluginSettings(s));
   }, [refreshVideos, refreshAuthStatus]);
 
-  // ── Event listeners ───────────────────────────────────────────────────────
   useEffect(() => {
     const conversionListener = addEventListener<[ConversionProgress]>(
       "conversion_progress",
@@ -535,7 +503,6 @@ function Content() {
     };
   }, [refreshVideos]);
 
-  // ── Auth polling ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!authPolling) return;
     const interval = setInterval(async () => {
@@ -559,7 +526,6 @@ function Content() {
     return () => clearInterval(interval);
   }, [authPolling]);
 
-  // ── Settings handlers ─────────────────────────────────────────────────────
   const handleSaveCredentials = async () => {
     if (!clientId || !clientSecret) {
       toaster.toast({ title: "Error", body: "Please enter both Client ID and Client Secret" });
@@ -610,7 +576,6 @@ function Content() {
     }
   };
 
-  // ── Upload handler ────────────────────────────────────────────────────────
   const handleSelectForUpload = (video: VideoFile) => {
     showModal(
       <UploadModal
@@ -621,7 +586,6 @@ function Content() {
     );
   };
 
-  // ── Clip handlers ─────────────────────────────────────────────────────────
   const handleExportClip = (clip: VideoFile) => {
     showModal(
       <ExportModal
@@ -642,7 +606,6 @@ function Content() {
     }
   };
 
-  // ── Exported video handlers ───────────────────────────────────────────────
   const handleConvertVideo = async (video: VideoFile) => {
     setConversionProgress(null);
     const result = await convertToMp4(video.path, video.game_id ?? "", "", "medium");
@@ -664,7 +627,6 @@ function Content() {
     }
   };
 
-  // ── Settings view ─────────────────────────────────────────────────────────
   if (view === "settings") {
     return (
       <>
@@ -778,7 +740,6 @@ function Content() {
     );
   }
 
-  // ── Steam Clips submenu ───────────────────────────────────────────────────
   if (view === "clips") {
     return (
       <>
@@ -893,7 +854,6 @@ function Content() {
     );
   }
 
-  // ── Exported Videos submenu ───────────────────────────────────────────────
   if (view === "videos") {
     return (
       <>
@@ -997,7 +957,6 @@ function Content() {
     );
   }
 
-  // ── Main list view ────────────────────────────────────────────────────────
   return (
     <>
       <PanelSection>
@@ -1038,9 +997,6 @@ function Content() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Plugin entry point
-// ---------------------------------------------------------------------------
 export default definePlugin(() => {
   console.log("Video Uploader plugin initializing");
 

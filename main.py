@@ -571,14 +571,14 @@ class Plugin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    async def _ffmpeg_concat(self, file_list: list, is_video: bool) -> str:
+    async def _ffmpeg_concat(self, file_list: list, is_video: bool, tmp_dir: str | None = None) -> str:
         list_tmp = tempfile.NamedTemporaryFile(
-            delete=False, mode="w", suffix=".txt"
+            delete=False, mode="w", suffix=".txt", dir=tmp_dir
         )
         for path in file_list:
             list_tmp.write(f"file '{path}'\n")
         list_tmp.close()
-        out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4", dir=tmp_dir)
         out_path = out_tmp.name
         out_tmp.close()
         try:
@@ -645,7 +645,7 @@ class Plugin:
                     continue
 
                 with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".mp4"
+                    delete=False, suffix=".mp4", dir=out_dir
                 ) as tmp_v:
                     tmp_v_path = tmp_v.name
                     with open(init_video, "rb") as f:
@@ -657,7 +657,7 @@ class Plugin:
                             tmp_v.write(f.read())
 
                 with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".mp4"
+                    delete=False, suffix=".mp4", dir=out_dir
                 ) as tmp_a:
                     tmp_a_path = tmp_a.name
                     with open(init_audio, "rb") as f:
@@ -680,8 +680,8 @@ class Plugin:
                 return
 
             if len(temp_videos) > 1:
-                final_video = await self._ffmpeg_concat(temp_videos, is_video=True)
-                final_audio = await self._ffmpeg_concat(temp_audios, is_video=False)
+                final_video = await self._ffmpeg_concat(temp_videos, is_video=True, tmp_dir=out_dir)
+                final_audio = await self._ffmpeg_concat(temp_audios, is_video=False, tmp_dir=out_dir)
                 temp_files.extend([final_video, final_audio])
             else:
                 final_video = temp_videos[0]

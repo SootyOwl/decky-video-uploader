@@ -9,6 +9,7 @@ import {
   PanelSectionRow,
   ProgressBarWithInfo,
   showModal,
+  SliderField,
   TextField,
   ToggleField,
   staticClasses,
@@ -122,10 +123,20 @@ interface ConversionProgress {
 
 type View = "list" | "clips" | "videos" | "settings";
 
-const QUALITY_OPTIONS = [
-  { value: "copy", label: "Original", description: "Fast — no re-encoding" },
-  { value: "high", label: "Smaller file", description: "Re-encode, ~40% smaller" },
-  { value: "medium", label: "Smallest file", description: "Re-encode, ~60% smaller" },
+const SPEED_SLIDER_LABELS = [
+  { notchIndex: 0, label: "Fastest", value: 0 },
+  { notchIndex: 1, label: "", value: 1 },
+  { notchIndex: 2, label: "Balanced", value: 2 },
+  { notchIndex: 3, label: "", value: 3 },
+  { notchIndex: 4, label: "Smallest", value: 4 },
+] as const;
+
+const QUALITY_SLIDER_LABELS = [
+  { notchIndex: 0, label: "Low", value: 0 },
+  { notchIndex: 1, label: "", value: 1 },
+  { notchIndex: 2, label: "Good", value: 2 },
+  { notchIndex: 3, label: "", value: 3 },
+  { notchIndex: 4, label: "Best", value: 4 },
 ] as const;
 
 const PRIVACY_OPTIONS = [
@@ -229,7 +240,8 @@ function ExportModal({
 }) {
   const defaultName = `${gName} - ${clip.clip_type === "video" ? "Recording" : "Clip"} ${formatDateTime(clip.modified)}`;
   const [name, setName] = useState(defaultName);
-  const [quality, setQuality] = useState("copy");
+  const [speed, setSpeed] = useState(2);
+  const [quality, setQuality] = useState(2);
 
   return (
     <ConfirmModal
@@ -237,7 +249,7 @@ function ExportModal({
       strOKButtonText="Export"
       strCancelButtonText="Cancel"
       onOK={() => {
-        convertSteamClip(clip.path, clip.game_id ?? "", name, quality).then((result) => {
+        convertSteamClip(clip.path, clip.game_id ?? "", name, `slider:${speed}:${quality}`).then((result) => {
           if (result.success) {
             toaster.toast({ title: "Export Started", body: `Exporting "${name}"...` });
           } else {
@@ -259,15 +271,29 @@ function ExportModal({
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <DropdownItem
+        <SliderField
           label="Quality"
-          description="Original quality is set in Steam > Settings > Game Recording"
-          rgOptions={QUALITY_OPTIONS.map((opt) => ({
-            data: opt.value,
-            label: `${opt.label} — ${opt.description}`,
-          }))}
-          selectedOption={quality}
-          onChange={(opt) => setQuality(opt.data)}
+          description="Higher quality = larger file size"
+          value={quality}
+          min={0}
+          max={4}
+          step={1}
+          notchCount={5}
+          notchLabels={QUALITY_SLIDER_LABELS as any}
+          notchTicksVisible={true}
+          onChange={setQuality}
+        />
+        <SliderField
+          label="Export Speed"
+          description="Slower export = smaller file size"
+          value={speed}
+          min={0}
+          max={4}
+          step={1}
+          notchCount={5}
+          notchLabels={SPEED_SLIDER_LABELS as any}
+          notchTicksVisible={true}
+          onChange={setSpeed}
         />
       </DialogBody>
     </ConfirmModal>

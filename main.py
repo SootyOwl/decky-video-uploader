@@ -341,6 +341,25 @@ class Plugin:
         "high":   ("18", "medium"),
     }
 
+    # Speed slider (0–4) → ffmpeg preset.  Higher = slower but smaller files.
+    SPEED_PRESETS: list = ["ultrafast", "veryfast", "fast", "medium", "slow"]
+
+    # Quality slider (0–4) → CRF value.  Higher = better quality, larger files.
+    QUALITY_CRF: list = ["28", "24", "20", "18", "16"]
+
+    def _resolve_quality(self, quality: str) -> tuple[str, str]:
+        """Parse a quality string into (crf, preset).
+
+        Accepts 'slider:<speed>:<quality>', legacy 'slider:<speed>',
+        or named presets like 'medium'/'high'.
+        """
+        if quality.startswith("slider:"):
+            parts = quality.split(":")
+            speed_idx = max(0, min(int(parts[1]), len(self.SPEED_PRESETS) - 1))
+            quality_idx = max(0, min(int(parts[2]), len(self.QUALITY_CRF) - 1)) if len(parts) > 2 else 2
+            return (self.QUALITY_CRF[quality_idx], self.SPEED_PRESETS[speed_idx])
+        return self.QUALITY_PRESETS.get(quality, self.QUALITY_PRESETS["medium"])
+
     async def convert_to_mp4(self, source_path: str, game_id: str = "", output_name: str = "", quality: str = "medium") -> dict:
         if not os.path.isfile(source_path):
             return {"success": False, "error": "Source file not found"}
@@ -348,7 +367,7 @@ class Plugin:
         if game_id and game_id.isdigit():
             names = await self.get_game_names()
             game_name = names.get(game_id, game_id)
-        crf, preset = self.QUALITY_PRESETS.get(quality, self.QUALITY_PRESETS["medium"])
+        crf, preset = self._resolve_quality(quality)
         asyncio.get_running_loop().create_task(self._run_conversion(source_path, game_name, output_name, crf, preset))
         return {"success": True, "started": True}
 
@@ -370,6 +389,53 @@ class Plugin:
             pass
         return 0.0
 
+    @staticmethod
+    async def _get_video_dimensions(source_path: str) -> tuple[int, int]:
+        """Return (width, height) of the first video stream, or (0, 0) on failure."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffprobe", "-v", "quiet",
+                "-print_format", "json",
+                "-show_streams", "-select_streams", "v:0",
+                source_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                info = json.loads(stdout)
+                streams = info.get("streams", [])
+                if streams:
+                    w = int(streams[0].get("width", 0))
+                    h = int(streams[0].get("height", 0))
+                    return (w, h)
+        except Exception:
+            pass
+        return (0, 0)
+
+    @staticmethod
+    def _build_crop_filter(width: int, height: int) -> str | None:
+        """Return a crop filter string to remove black bars if the video is 16:10.
+
+        The Steam Deck has a 16:10 (1280x800) display.  Games running at 16:9
+        are rendered with black bars (40 px top + 40 px bottom on a 800-high
+        screen).  This detects such videos and returns a crop filter to remove
+        the bars, producing a clean 16:9 output.
+
+        Returns None if no cropping is needed.
+        """
+        if width <= 0 or height <= 0:
+            return None
+        ratio = width / height
+        # 16:10 = 1.6 — accept a small tolerance
+        if abs(ratio - 1.6) < 0.02:
+            # Crop to 16:9: new_height = width * 9 / 16, centered vertically
+            new_height = int(width * 9 / 16)
+            # Ensure even dimensions for codec compatibility
+            new_height = new_height - (new_height % 2)
+            return f"crop={width}:{new_height}"
+        return None
+
     async def _run_conversion(self, source_path: str, game_name: str = "", output_name: str = "", crf: str = "22", preset: str = "fast") -> None:
         out_dir = self._videos_dir(game_name)
         base = output_name.strip() if output_name.strip() else os.path.splitext(os.path.basename(source_path))[0]
@@ -382,13 +448,21 @@ class Plugin:
 
         duration = await self._get_duration(source_path)
 
+        # Detect 16:10 source (Steam Deck) and build crop filter for 16:9
+        width, height = await self._get_video_dimensions(source_path)
+        crop_filter = self._build_crop_filter(width, height)
+
         await decky.emit("conversion_progress", {"status": "started", "source": source_path, "progress": 0})
         try:
-            proc = await asyncio.create_subprocess_exec(
+            cmd = [
                 "ffmpeg",
                 "-y",
                 "-i",
                 source_path,
+            ]
+            if crop_filter:
+                cmd.extend(["-vf", crop_filter])
+            cmd.extend([
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -403,11 +477,21 @@ class Plugin:
                 "+faststart",
                 "-progress", "pipe:1",
                 output_path,
+            ])
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            # Drain stderr in the background to prevent pipe buffer deadlock
+            async def _drain_stderr():
+                assert proc.stderr is not None
+                return await proc.stderr.read()
+            stderr_task = asyncio.ensure_future(_drain_stderr())
+            # Parse progress from stdout (machine-readable key=value lines)
             await self._read_ffmpeg_progress(proc, duration)
             await proc.wait()
+            stderr_data = await stderr_task
             if proc.returncode == 0:
                 await decky.emit(
                     "conversion_progress",
@@ -419,7 +503,6 @@ class Plugin:
                     },
                 )
             else:
-                stderr_data = await proc.stderr.read()
                 err = stderr_data.decode("utf-8", errors="replace")[-500:]
                 await decky.emit(
                     "conversion_progress",
@@ -507,14 +590,14 @@ class Plugin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    async def _ffmpeg_concat(self, file_list: list, is_video: bool) -> str:
+    async def _ffmpeg_concat(self, file_list: list, is_video: bool, tmp_dir: str | None = None) -> str:
         list_tmp = tempfile.NamedTemporaryFile(
-            delete=False, mode="w", suffix=".txt"
+            delete=False, mode="w", suffix=".txt", dir=tmp_dir
         )
         for path in file_list:
             list_tmp.write(f"file '{path}'\n")
         list_tmp.close()
-        out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4", dir=tmp_dir)
         out_path = out_tmp.name
         out_tmp.close()
         try:
@@ -581,7 +664,7 @@ class Plugin:
                     continue
 
                 with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".mp4"
+                    delete=False, suffix=".mp4", dir=out_dir
                 ) as tmp_v:
                     tmp_v_path = tmp_v.name
                     with open(init_video, "rb") as f:
@@ -593,7 +676,7 @@ class Plugin:
                             tmp_v.write(f.read())
 
                 with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".mp4"
+                    delete=False, suffix=".mp4", dir=out_dir
                 ) as tmp_a:
                     tmp_a_path = tmp_a.name
                     with open(init_audio, "rb") as f:
@@ -616,23 +699,25 @@ class Plugin:
                 return
 
             if len(temp_videos) > 1:
-                final_video = await self._ffmpeg_concat(temp_videos, is_video=True)
-                final_audio = await self._ffmpeg_concat(temp_audios, is_video=False)
+                final_video = await self._ffmpeg_concat(temp_videos, is_video=True, tmp_dir=out_dir)
+                final_audio = await self._ffmpeg_concat(temp_audios, is_video=False, tmp_dir=out_dir)
                 temp_files.extend([final_video, final_audio])
             else:
                 final_video = temp_videos[0]
                 final_audio = temp_audios[0]
 
             duration = await self._get_duration(final_video)
-            if quality == "copy" or quality not in self.QUALITY_PRESETS:
-                merge_args = ["-c", "copy"]
-            else:
-                crf, preset = self.QUALITY_PRESETS[quality]
-                merge_args = [
-                    "-c:v", "libx264", "-preset", preset, "-crf", crf,
-                    "-c:a", "aac", "-b:a", "128k",
-                    "-movflags", "+faststart",
-                ]
+            # Detect 16:10 source (Steam Deck) and build crop filter for 16:9
+            width, height = await self._get_video_dimensions(final_video)
+            crop_filter = self._build_crop_filter(width, height)
+            crf, preset = self._resolve_quality(quality)
+            vf_args = ["-vf", crop_filter] if crop_filter else []
+            merge_args = [
+                *vf_args,
+                "-c:v", "libx264", "-preset", preset, "-crf", crf,
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+            ]
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-y",
                 "-i", final_video,
@@ -643,8 +728,14 @@ class Plugin:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            # Drain stderr in the background to prevent pipe buffer deadlock
+            async def _drain_stderr():
+                assert proc.stderr is not None
+                return await proc.stderr.read()
+            stderr_task = asyncio.ensure_future(_drain_stderr())
             await self._read_ffmpeg_progress(proc, duration)
             await proc.wait()
+            stderr_data = await stderr_task
             if proc.returncode == 0:
                 await decky.emit(
                     "conversion_progress",
@@ -656,7 +747,6 @@ class Plugin:
                     },
                 )
             else:
-                stderr_data = await proc.stderr.read()
                 err = stderr_data.decode("utf-8", errors="replace")[-500:]
                 await decky.emit(
                     "conversion_progress",

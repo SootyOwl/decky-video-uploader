@@ -435,6 +435,53 @@ class Plugin:
             pass
         return 0.0
 
+    @staticmethod
+    async def _get_video_dimensions(source_path: str) -> tuple[int, int]:
+        """Return (width, height) of the first video stream, or (0, 0) on failure."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffprobe", "-v", "quiet",
+                "-print_format", "json",
+                "-show_streams", "-select_streams", "v:0",
+                source_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                info = json.loads(stdout)
+                streams = info.get("streams", [])
+                if streams:
+                    w = int(streams[0].get("width", 0))
+                    h = int(streams[0].get("height", 0))
+                    return (w, h)
+        except Exception:
+            pass
+        return (0, 0)
+
+    @staticmethod
+    def _build_crop_filter(width: int, height: int) -> str | None:
+        """Return a crop filter string to remove black bars if the video is 16:10.
+
+        The Steam Deck has a 16:10 (1280x800) display.  Games running at 16:9
+        are rendered with black bars (40 px top + 40 px bottom on a 800-high
+        screen).  This detects such videos and returns a crop filter to remove
+        the bars, producing a clean 16:9 output.
+
+        Returns None if no cropping is needed.
+        """
+        if width <= 0 or height <= 0:
+            return None
+        ratio = width / height
+        # 16:10 = 1.6 — accept a small tolerance
+        if abs(ratio - 1.6) < 0.02:
+            # Crop to 16:9: new_height = width * 9 / 16, centered vertically
+            new_height = int(width * 9 / 16)
+            # Ensure even dimensions for codec compatibility
+            new_height = new_height - (new_height % 2)
+            return f"crop={width}:{new_height}"
+        return None
+
     async def _run_conversion(self, source_path: str, game_name: str = "", output_name: str = "", crf: str = "22", preset: str = "fast") -> None:
         out_dir = self._videos_dir(game_name)
         base = output_name.strip() if output_name.strip() else os.path.splitext(os.path.basename(source_path))[0]
@@ -448,13 +495,21 @@ class Plugin:
 
         duration = await self._get_duration(source_path)
 
+        # Detect 16:10 source (Steam Deck) and build crop filter for 16:9
+        width, height = await self._get_video_dimensions(source_path)
+        crop_filter = self._build_crop_filter(width, height)
+
         await decky.emit("conversion_progress", {"status": "started", "source": source_path, "progress": 0})
         try:
-            proc = await asyncio.create_subprocess_exec(
+            cmd = [
                 "ffmpeg",
                 "-y",
                 "-i",
                 source_path,
+            ]
+            if crop_filter:
+                cmd.extend(["-vf", crop_filter])
+            cmd.extend([
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -469,6 +524,9 @@ class Plugin:
                 "+faststart",
                 "-progress", "pipe:1",
                 output_path,
+            ])
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -722,11 +780,23 @@ class Plugin:
 
             # Merge video + audio streams into the output mp4
             duration = await self._get_duration(final_video)
+            # Detect 16:10 source (Steam Deck) and build crop filter for 16:9
+            width, height = await self._get_video_dimensions(final_video)
+            crop_filter = self._build_crop_filter(width, height)
             if quality == "copy" or quality not in self.QUALITY_PRESETS:
-                merge_args = ["-c", "copy"]
+                if crop_filter:
+                    # Can't use -c copy with a video filter; fall back to re-encode
+                    merge_args = ["-vf", crop_filter, "-c:v", "libx264",
+                                  "-preset", "fast", "-crf", "22",
+                                  "-c:a", "copy",
+                                  "-movflags", "+faststart"]
+                else:
+                    merge_args = ["-c", "copy"]
             else:
                 crf, preset = self.QUALITY_PRESETS[quality]
+                vf_args = ["-vf", crop_filter] if crop_filter else []
                 merge_args = [
+                    *vf_args,
                     "-c:v", "libx264", "-preset", preset, "-crf", crf,
                     "-c:a", "aac", "-b:a", "128k",
                     "-movflags", "+faststart",

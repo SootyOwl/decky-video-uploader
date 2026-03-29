@@ -26,11 +26,13 @@ jobs:
       - name: Build frontend
         run: pnpm run build
 
-      - name: Build test zip
-        run: bash mkzip.sh
+      - name: Stage plugin files
+        run: |
+          mkdir -p staging/decky-video-uploader
+          cp -r dist assets main.py package.json plugin.json LICENSE README.md staging/decky-video-uploader/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: decky-video-uploader-pr${{ github.event.pull_request.number }}
-          path: decky-video-uploader.zip
+          path: staging/decky-video-uploader/

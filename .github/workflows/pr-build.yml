@@ -35,4 +35,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: decky-video-uploader-pr${{ github.event.pull_request.number }}
-          path: staging/decky-video-uploader/
+          path: staging/

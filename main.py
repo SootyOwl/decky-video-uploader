@@ -341,6 +341,15 @@ class Plugin:
         "high":   ("18", "medium"),
     }
 
+    # Slider value (0–4) → (crf, preset).  Lower index = faster/larger.
+    EXPORT_SLIDER: list = [
+        ("18", "ultrafast"),   # 0 – Fastest
+        ("20", "veryfast"),    # 1
+        ("20", "fast"),        # 2 – Balanced (default)
+        ("22", "medium"),      # 3
+        ("22", "slow"),        # 4 – Smallest
+    ]
+
     async def convert_to_mp4(self, source_path: str, game_id: str = "", output_name: str = "", quality: str = "medium") -> dict:
         if not os.path.isfile(source_path):
             return {"success": False, "error": "Source file not found"}
@@ -348,7 +357,11 @@ class Plugin:
         if game_id and game_id.isdigit():
             names = await self.get_game_names()
             game_name = names.get(game_id, game_id)
-        crf, preset = self.QUALITY_PRESETS.get(quality, self.QUALITY_PRESETS["medium"])
+        if quality.startswith("slider:"):
+            idx = max(0, min(int(quality.split(":", 1)[1]), len(self.EXPORT_SLIDER) - 1))
+            crf, preset = self.EXPORT_SLIDER[idx]
+        else:
+            crf, preset = self.QUALITY_PRESETS.get(quality, self.QUALITY_PRESETS["medium"])
         asyncio.get_running_loop().create_task(self._run_conversion(source_path, game_name, output_name, crf, preset))
         return {"success": True, "started": True}
 
@@ -691,18 +704,21 @@ class Plugin:
             # Detect 16:10 source (Steam Deck) and build crop filter for 16:9
             width, height = await self._get_video_dimensions(final_video)
             crop_filter = self._build_crop_filter(width, height)
-            if quality == "copy" or quality not in self.QUALITY_PRESETS:
-                if crop_filter:
-                    # Can't use -c copy with a video filter; use ultrafast to
-                    # stay as close to stream-copy speed as possible.
-                    merge_args = ["-vf", crop_filter, "-c:v", "libx264",
-                                  "-preset", "ultrafast", "-crf", "18",
-                                  "-c:a", "copy",
-                                  "-movflags", "+faststart"]
-                else:
-                    merge_args = ["-c", "copy"]
+            if quality == "copy" and not crop_filter:
+                merge_args = ["-c", "copy"]
             else:
-                crf, preset = self.QUALITY_PRESETS[quality]
+                # Use slider value if provided (e.g. "slider:2"), otherwise
+                # fall back to named presets or default balanced settings.
+                if quality.startswith("slider:"):
+                    idx = max(0, min(int(quality.split(":", 1)[1]), len(self.EXPORT_SLIDER) - 1))
+                    crf, preset = self.EXPORT_SLIDER[idx]
+                elif quality == "copy":
+                    # copy was requested but crop is needed — use balanced default
+                    crf, preset = self.EXPORT_SLIDER[2]
+                elif quality in self.QUALITY_PRESETS:
+                    crf, preset = self.QUALITY_PRESETS[quality]
+                else:
+                    crf, preset = self.EXPORT_SLIDER[2]
                 vf_args = ["-vf", crop_filter] if crop_filter else []
                 merge_args = [
                     *vf_args,

@@ -341,13 +341,14 @@ class Plugin:
         "high":   ("18", "medium"),
     }
 
-    # Slider value (0–4) → (crf, preset).  Lower index = faster/larger.
+    # Slider value (0–4) → (crf, preset).  CRF is constant so visual quality
+    # stays the same; only the preset varies, trading encode speed for file size.
     EXPORT_SLIDER: list = [
-        ("18", "ultrafast"),   # 0 – Fastest
+        ("20", "ultrafast"),   # 0 – Fastest
         ("20", "veryfast"),    # 1
         ("20", "fast"),        # 2 – Balanced (default)
-        ("22", "medium"),      # 3
-        ("22", "slow"),        # 4 – Smallest
+        ("20", "medium"),      # 3
+        ("20", "slow"),        # 4 – Smallest
     ]
 
     async def convert_to_mp4(self, source_path: str, game_id: str = "", output_name: str = "", quality: str = "medium") -> dict:

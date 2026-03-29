@@ -1,0 +1,36 @@
+name: PR Build
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        run: npm i -g pnpm@9
+
+      - name: Install dependencies
+        run: pnpm i --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm run build
+
+      - name: Build test zip
+        run: bash mkzip.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: decky-video-uploader-pr${{ github.event.pull_request.number }}
+          path: decky-video-uploader.zip

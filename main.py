@@ -530,9 +530,15 @@ class Plugin:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            # Drain stderr in the background to prevent pipe buffer deadlock
+            async def _drain_stderr():
+                assert proc.stderr is not None
+                return await proc.stderr.read()
+            stderr_task = asyncio.ensure_future(_drain_stderr())
             # Parse progress from stdout (machine-readable key=value lines)
             await self._read_ffmpeg_progress(proc, duration)
             await proc.wait()
+            stderr_data = await stderr_task
             if proc.returncode == 0:
                 await decky.emit(
                     "conversion_progress",
@@ -544,7 +550,6 @@ class Plugin:
                     },
                 )
             else:
-                stderr_data = await proc.stderr.read()
                 err = stderr_data.decode("utf-8", errors="replace")[-500:]
                 await decky.emit(
                     "conversion_progress",
@@ -785,9 +790,10 @@ class Plugin:
             crop_filter = self._build_crop_filter(width, height)
             if quality == "copy" or quality not in self.QUALITY_PRESETS:
                 if crop_filter:
-                    # Can't use -c copy with a video filter; fall back to re-encode
+                    # Can't use -c copy with a video filter; use ultrafast to
+                    # stay as close to stream-copy speed as possible.
                     merge_args = ["-vf", crop_filter, "-c:v", "libx264",
-                                  "-preset", "fast", "-crf", "22",
+                                  "-preset", "ultrafast", "-crf", "18",
                                   "-c:a", "copy",
                                   "-movflags", "+faststart"]
                 else:
@@ -811,8 +817,14 @@ class Plugin:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            # Drain stderr in the background to prevent pipe buffer deadlock
+            async def _drain_stderr():
+                assert proc.stderr is not None
+                return await proc.stderr.read()
+            stderr_task = asyncio.ensure_future(_drain_stderr())
             await self._read_ffmpeg_progress(proc, duration)
             await proc.wait()
+            stderr_data = await stderr_task
             if proc.returncode == 0:
                 await decky.emit(
                     "conversion_progress",
@@ -824,7 +836,6 @@ class Plugin:
                     },
                 )
             else:
-                stderr_data = await proc.stderr.read()
                 err = stderr_data.decode("utf-8", errors="replace")[-500:]
                 await decky.emit(
                     "conversion_progress",
